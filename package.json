@@ -1,0 +1,20 @@
+{
+  "name": "orvix",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/api",
+    "apps/cli",
+    "packages/core",
+    "packages/qwen",
+    "packages/workspace"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @orvix/core && npm run build --workspace @orvix/qwen && npm run build --workspace @orvix/workspace && npm run build --workspace @orvix/api && npm run build --workspace @orvix/cli",
+    "api": "npm run dev --workspace @orvix/api",
+    "dev": "npm run dev --workspace @orvix/cli",
+    "mission": "npm run mission --workspace @orvix/cli",
+    "start:api": "npm run start --workspace @orvix/api"
+  }
+}

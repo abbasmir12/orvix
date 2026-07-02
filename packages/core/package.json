@@ -1,0 +1,19 @@
+{
+  "name": "@orvix/core",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./types": "./dist/types.js",
+    "./missionAnalyzer": "./dist/missionAnalyzer.js",
+    "./mockSimulation": "./dist/mockSimulation.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
