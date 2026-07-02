@@ -384,6 +384,91 @@ const ORVIX_PRODUCT_QUALITY_BAR = [
   "Use compact but coherent code. Prefer fewer files that build over many disconnected files."
 ].join(" ");
 
+export type AgentSessionInput = {
+  mission: string;
+  agent: Agent;
+  task: Task;
+  allowedTools: AgentToolName[];
+  workspaceFiles: unknown;
+  bookContext: OrvixBookContext;
+  organization?: unknown;
+  agents?: unknown;
+  tasks?: unknown;
+  pullRequests?: unknown;
+  reviewFeedback?: unknown;
+  planRepair?: unknown;
+  orvixMap?: unknown;
+  mapWorkPacket?: unknown;
+  revision?: boolean;
+  maxTurns: number;
+  maxToolCalls: number;
+};
+
+/**
+ * Builds the opening messages for a multi-turn agent session. The orchestrator
+ * loops: model emits native tool_calls -> Orvix executes them -> results come
+ * back as tool-role messages -> model continues until open_pr/complete_task.
+ */
+export function createAgentSessionMessages(input: AgentSessionInput): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        ORVIX_OPERATING_CONSTITUTION,
+        ORVIX_TOOL_MANUAL,
+        ORVIX_AGENT_TRANSCRIPT_STYLE,
+        ORVIX_PRODUCT_QUALITY_BAR,
+        "You are now a specialist agent inside this Orvix organization, working in an INTERACTIVE session.",
+        "Each of your turns should call one or more tools; Orvix executes them and returns real results as tool messages. React to those results.",
+        "Investigate before you build: use list_files and read_file on existing files you plan to change or depend on, then write coherent code that matches what you actually read.",
+        "If a tool fails or a file's content is not what you expected, adapt: fix the path, rewrite the file, or delete the stale file. Do not repeat a failing call unchanged.",
+        "The Orvix Map is the locked source of truth. Your mapWorkPacket is your assigned slice; implement it and stay compatible with the full map.",
+        "Alongside tool calls, write 1-2 short sentences of visible narration in your message content: what you found, what you are doing next, and why. This is streamed live to the user.",
+        `Budget: at most ${input.maxTurns} turns and ${input.maxToolCalls} tool calls total. Spend them on concrete implementation, not repeated coordination.`,
+        input.revision
+          ? "This is a REVISION turn. Read the reviewer feedback, read the current files on your branch, and change the actual source/config/test files the review calls out. Documentation-only responses will be rejected."
+          : "Your branch and worktree are already prepared; you do not need create_branch unless you want a different base.",
+        "For an implementation task you must produce at least one write_file or delete_file with real content before finishing. A markdown status note is not implementation.",
+        "Finish by calling open_pr with a title and summary once your work is committed (commit_changes first). Only use complete_task for explicitly review-only tasks.",
+        "If information from a teammate is missing, post_book_entry with an explicit assumption and continue; never stall the session waiting."
+      ].join(" ")
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        projectBrief: {
+          productMission: input.mission,
+          operatingModel: "Parallel multi-agent engineering organization using Orvix Book, branch packets, and PR review."
+        },
+        agentIdentity: {
+          whoYouAre: input.agent,
+          yourWork: input.task,
+          instruction: "Own your domain. Coordinate through Orvix Book. Continue with explicit assumptions when contracts are missing."
+        },
+        organizationContext: {
+          organization: input.organization,
+          agents: input.agents,
+          tasks: input.tasks,
+          pullRequests: input.pullRequests,
+          reviewFeedback: input.reviewFeedback,
+          planRepair: input.planRepair,
+          orvixMap: input.orvixMap,
+          mapWorkPacket: input.mapWorkPacket
+        },
+        allowedTools: input.allowedTools,
+        workspaceFiles: input.workspaceFiles,
+        orvixBook: input.bookContext,
+        sessionRules: [
+          "Start by inspecting the workspace files relevant to your packet.",
+          "Then write the concrete implementation files for your slice.",
+          "Then commit_changes and open_pr.",
+          "Narrate progress briefly in each message so the live feed shows your reasoning."
+        ]
+      })
+    }
+  ];
+}
+
 export function createQwenConfig(env: NodeJS.ProcessEnv = process.env): QwenConfig {
   const concurrency = Number(env.QWEN_MAX_CONCURRENT_REQUESTS ?? "");
   return {
@@ -1188,304 +1273,57 @@ export class QwenClient {
     return parseQwenJson<FinalReportDraft>(await this.createFinalReport(input));
   }
 
-  async planAgentExecution(input: {
+  /** One turn of a multi-turn agent session; tool results are fed back as tool-role messages. */
+  async agentSessionTurn(messages: ChatMessage[], tools: AgentToolName[], options: { requireTool?: boolean; timeoutMs?: number } = {}) {
+    return this.chatDetailed(messages, {
+      temperature: 0.15,
+      role: "agent",
+      nativeTools: tools,
+      requireNativeTool: options.requireTool ?? false,
+      timeoutMs: options.timeoutMs ?? Number(process.env.QWEN_AGENT_TURN_TIMEOUT_MS ?? 120000)
+    });
+  }
+
+  async answerBookQuestion(input: {
     mission: string;
     agent: Agent;
-    task: Task;
-    allowedTools: AgentToolName[];
-    workspaceFiles: unknown;
+    ownedTask?: Task | null;
+    question: OrvixBookContext["entries"][number];
     bookContext: OrvixBookContext;
-    organization?: unknown;
-    agents?: unknown;
-    tasks?: unknown;
-    pullRequests?: unknown;
-    reviewFeedback?: unknown;
-    planRepair?: unknown;
-    orvixMap?: unknown;
-    mapWorkPacket?: unknown;
   }) {
     return this.chat([
       {
         role: "system",
         content: [
           ORVIX_OPERATING_CONSTITUTION,
-          ORVIX_TOOL_MANUAL,
-          ORVIX_AGENT_TRANSCRIPT_STYLE,
-          ORVIX_PRODUCT_QUALITY_BAR,
-          "You are now a specialist agent inside this Orvix organization.",
-          "The Orvix Map is the locked source of truth. Read it before choosing files, ids, routes, endpoints, commands, components, or runtime behavior.",
-          "Your mapWorkPacket is your assigned slice of the Orvix Map. Implement that slice and stay compatible with the full map.",
-          "If mapWorkPacket.mustCreateOrUpdate lists files, strongly prefer writing those files or clearly related source, config, test, or route files.",
-          "Do not invent major surfaces, ids, files, or behavior that contradict the Orvix Map. If the map is missing a detail, post an Orvix Book assumption and continue with compatible work.",
-          "Start by understanding who you are, what you own, what other agents own, and what contract you need from them.",
-          "You cannot run commands directly; you can only return allowed tool calls.",
-          "You must return valid compact JSON only. No markdown.",
-	          "Return a JSON object with keys: summary, transcript, toolCalls.",
-	          "transcript must be 8 to 14 visible agent transcript events. Use natural, varied wording.",
-	          "Each transcript item has type, text, optional beforeToolIndex, optional tool, optional path.",
-	          "Use beforeToolIndex to place a transcript event before the tool call it explains.",
-	          "Do not include hidden chain-of-thought. Only include user-visible progress narration, decisions, assumptions, and handoffs.",
-          "toolCalls must be an array of at most 8 tool calls.",
-          "Allowed tool names are exactly the provided tools.",
-          "A markdown status file, delivery note, or revision note is not a valid implementation artifact by itself.",
-          "Use research_web/fetch_url before implementation when the stack, API, design pattern, deployment target, or domain requirements are uncertain or current.",
-          "Use coordination/research tools first when useful, then create_branch, then concrete write_file calls, then commit_changes, then open_pr or complete_task.",
-          "Audit the existing workspace before extending it. Preserve files that match the mission and remove or replace files that clearly belong to a different product, stack, or domain.",
-          "Choose entry files that match the actual scaffold and mission: Vite/React commonly uses src/App.tsx and src/main.tsx; Next.js uses app/page.tsx and route files only when the mission/scaffold calls for Next.js.",
-          "For frontend or UI tasks, always write at least one visible route/entry file in addition to reusable components.",
-          "If the user asked for a product like CRM, dashboard, contacts, notes, or auth, replace generic scaffold copy with mission-specific UI and routes. Do not leave placeholder text as the main page.",
-          "If you are unsure whether the implementation satisfies the mission, post an Orvix Book question to MasterMind or Runtime QA asking for inspection, then continue with the best next concrete change.",
-          "Return concrete implementation artifacts, not only status notes. Prefer source files, schemas, tests, API contracts, UI components, or config files matching the assigned task.",
-          "Keep generated code small but coherent."
+          `You are ${input.agent.name} (${input.agent.role}) answering a teammate's question in Orvix Book.`,
+          "Answer from your real ownership perspective: state the contract, interface, decision, or constraint the asker needs.",
+          "If you genuinely cannot answer yet, say what assumption the asker should proceed with and when you will confirm it.",
+          "Be concrete and short (2-4 sentences). No markdown. Return valid compact JSON only."
         ].join(" ")
       },
       {
         role: "user",
         content: JSON.stringify({
-          projectBrief: {
-            productMission: input.mission,
-            operatingModel: "Parallel multi-agent engineering organization using Orvix Book, branch packets, and PR review."
-          },
-          organizationContext: {
-            organization: input.organization,
-            agents: input.agents,
-            tasks: input.tasks,
-            pullRequests: input.pullRequests,
-            reviewFeedback: input.reviewFeedback,
-            planRepair: input.planRepair,
-            orvixMap: input.orvixMap,
-            mapWorkPacket: input.mapWorkPacket
-          },
-          agentIdentity: {
-            whoYouAre: input.agent,
-            yourWork: input.task,
-            instruction: "Own your domain. Coordinate through Orvix Book. Continue with explicit assumptions when contracts are missing."
-          },
-          allowedTools: input.allowedTools,
-          workspaceFiles: input.workspaceFiles,
-          orvixBook: input.bookContext,
-          coordinationRules: [
-            "Agents run in parallel.",
-            "Do not block on dependencies.",
-            "Use Orvix Book for questions, assumptions, contracts, handoffs, and conflicts.",
-            "Continue branch work with explicit assumptions while waiting for answers.",
-            "Mention likely owner agents when asking for contracts.",
-            "Ask MasterMind or Runtime QA for implementation inspection when visible behavior is uncertain.",
-            "Do not leave scaffold placeholder content as the user-facing app.",
-            "For frontend work, update the visible app route, not only a disconnected component."
-          ],
-	          outputSchema: {
-	            summary: "short explanation of the execution approach",
-	            transcript: [
-	              {
-	                type: "observation",
-	                text: "The task touches authentication, but the database contract is still fluid. I can keep moving by publishing the user-table assumption and coding against that boundary.",
-	                beforeToolIndex: 0
-	              },
-	              {
-	                type: "tool_intent",
-	                tool: "write_file",
-	                path: "src/auth/tenantContext.ts",
-	                text: "Next I need a small tenant context module so the API and UI agents can depend on one stable interface.",
-	                beforeToolIndex: 2
-	              }
-	            ],
-	            toolCalls: [
-              {
-                tool: "create_branch | write_file | delete_file | commit_changes | open_pr | complete_task | research_web | fetch_url | post_book_entry | read_book | answer_book_entry | read_signals | mark_signal_read",
-                branch: "optional branch name",
-                path: "optional workspace-relative path",
-                content: "optional file content",
-                message: "optional commit message",
-                title: "optional PR title",
-                summary: "optional PR summary",
-                entryId: "optional Orvix Book entry id for answer_book_entry or mark_signal_read",
-                signalId: "optional signal id for mark_signal_read",
-                entryType: "optional Orvix Book entry type",
-                toAgentIds: ["optional mentioned agent ids"],
-                topics: ["optional routing topics"],
-                priority: "optional priority"
-              }
-            ],
-            summaryGuidance: "Mention your role, coordination assumptions, files you will create, and next PR action."
-          }
+          mission: input.mission,
+          you: input.agent,
+          yourTask: input.ownedTask,
+          question: input.question,
+          recentBook: input.bookContext.entries.slice(-12),
+          outputSchema: { message: "your answer as one Orvix Book entry" }
         })
       }
-    ], { temperature: 0.15, json: true, role: "agent" });
+    ], { temperature: 0.2, json: true, role: "agent" });
   }
 
-  async planAgentExecutionJson(input: {
+  async answerBookQuestionJson(input: {
     mission: string;
     agent: Agent;
-    task: Task;
-    allowedTools: AgentToolName[];
-    workspaceFiles: unknown;
+    ownedTask?: Task | null;
+    question: OrvixBookContext["entries"][number];
     bookContext: OrvixBookContext;
-    organization?: unknown;
-    agents?: unknown;
-    tasks?: unknown;
-    pullRequests?: unknown;
-    reviewFeedback?: unknown;
-    planRepair?: unknown;
-    orvixMap?: unknown;
-    mapWorkPacket?: unknown;
   }) {
-    return parseQwenJson<AgentExecutionPlan>(await this.planAgentExecution(input));
-  }
-
-  async planAgentExecutionDetailedJson(input: {
-    mission: string;
-    agent: Agent;
-    task: Task;
-    allowedTools: AgentToolName[];
-    workspaceFiles: unknown;
-    bookContext: OrvixBookContext;
-    organization?: unknown;
-    agents?: unknown;
-    tasks?: unknown;
-    pullRequests?: unknown;
-    reviewFeedback?: unknown;
-    planRepair?: unknown;
-    orvixMap?: unknown;
-    mapWorkPacket?: unknown;
-  }) {
-    const result = await this.chatDetailed([
-      {
-        role: "system",
-        content: [
-          ORVIX_OPERATING_CONSTITUTION,
-          ORVIX_TOOL_MANUAL,
-          ORVIX_AGENT_TRANSCRIPT_STYLE,
-          ORVIX_PRODUCT_QUALITY_BAR,
-          "You are now a specialist agent inside this Orvix organization.",
-          "The Orvix Map is the locked source of truth. Read it before choosing files, ids, routes, endpoints, commands, components, or runtime behavior.",
-          "Your mapWorkPacket is your assigned slice of the Orvix Map. Implement that slice and stay compatible with the full map.",
-          "If mapWorkPacket.mustCreateOrUpdate lists files, strongly prefer writing those files or clearly related source, config, test, or route files.",
-          "Do not invent major surfaces, ids, files, or behavior that contradict the Orvix Map. If the map is missing a detail, post an Orvix Book assumption and continue with compatible work.",
-          "Start by understanding who you are, what you own, what other agents own, and what contract you need from them.",
-          "Narrate user-visible progress like a coding agent: what you are checking, what you are about to write, what you learned from coordination, and why the next tool call is needed.",
-          "You cannot run commands directly; you can only return allowed tool calls.",
-          "You must return valid compact JSON only. No markdown.",
-          "Return a JSON object with keys: summary, transcript, toolCalls.",
-          "transcript must be 8 to 14 visible agent transcript events that can be interleaved before tool calls in a terminal transcript.",
-          "Each transcript item has type, text, optional beforeToolIndex, optional tool, optional path.",
-          "Use beforeToolIndex to place the event before the exact tool call it explains. Multiple events can share one index.",
-          "Do not include hidden chain-of-thought in JSON. Only include user-visible progress narration, decisions, assumptions, and handoffs.",
-          "toolCalls must be an array of at most 8 tool calls.",
-          "Allowed tool names are exactly the provided tools.",
-          "For an implementation task, a coordination-only plan is invalid. Include at least one write_file or delete_file tool call unless the task is explicitly review-only.",
-          "A markdown status file, delivery note, or revision note is not a valid implementation artifact by itself.",
-          "Use research_web/fetch_url before implementation when the stack, API, design pattern, deployment target, or domain requirements are uncertain or current.",
-          "Use coordination/research tools first when useful, then create_branch, then concrete write_file calls, then commit_changes, then open_pr or complete_task.",
-          "Audit the existing workspace before extending it. Preserve files that match the mission and remove or replace files that clearly belong to a different product, stack, or domain.",
-          "Choose entry files that match the actual scaffold and mission: Vite/React commonly uses src/App.tsx and src/main.tsx; Next.js uses app/page.tsx and route files only when the mission/scaffold calls for Next.js.",
-          "For frontend or UI tasks, always write at least one visible route/entry file in addition to reusable components.",
-          "If the user asked for a product like CRM, dashboard, contacts, notes, or auth, replace generic scaffold copy with mission-specific UI and routes. Do not leave placeholder text as the main page.",
-          "If reviewer feedback calls out stale or unrelated files, delete those files with delete_file before writing the corrected implementation.",
-          "On revision turns, change the actual source, route, config, or test files related to the review. Do not answer review feedback by adding only documentation.",
-          "If you are unsure whether the implementation satisfies the mission, post an Orvix Book question to MasterMind or Runtime QA asking for inspection, then continue with the best next concrete change.",
-          "Return concrete implementation artifacts, not only status notes. Prefer source files, schemas, tests, API contracts, UI components, or config files matching the assigned task.",
-          "Keep generated code small but coherent."
-        ].join(" ")
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          projectBrief: {
-            productMission: input.mission,
-            operatingModel: "Parallel multi-agent engineering organization using Orvix Book, branch packets, and PR review."
-          },
-          organizationContext: {
-            organization: input.organization,
-            agents: input.agents,
-            tasks: input.tasks,
-            pullRequests: input.pullRequests,
-            reviewFeedback: input.reviewFeedback,
-            planRepair: input.planRepair,
-            orvixMap: input.orvixMap,
-            mapWorkPacket: input.mapWorkPacket
-          },
-          agentIdentity: {
-            whoYouAre: input.agent,
-            yourWork: input.task,
-            instruction: "Own your domain. Coordinate through Orvix Book. Continue with explicit assumptions when contracts are missing."
-          },
-          allowedTools: input.allowedTools,
-          workspaceFiles: input.workspaceFiles,
-          orvixBook: input.bookContext,
-          coordinationRules: [
-            "Agents run in parallel.",
-            "Do not block on dependencies.",
-            "Use Orvix Book for questions, assumptions, contracts, handoffs, and conflicts.",
-            "Continue branch work with explicit assumptions while waiting for answers.",
-            "Mention likely owner agents when asking for contracts.",
-            "Ask MasterMind or Runtime QA for implementation inspection when visible behavior is uncertain.",
-            "Do not leave scaffold placeholder content as the user-facing app.",
-            "For frontend work, update the visible app route, not only a disconnected component.",
-            "Narrate progress before and between tool calls so the UI can show a live agent session."
-          ],
-          outputSchema: {
-            summary: "short explanation of the execution approach",
-            transcript: [
-              {
-                type: "observation",
-                text: "Before touching files, I am checking my owned task against the sibling agent contracts and the current Orvix Book entries.",
-                beforeToolIndex: 0
-              },
-              {
-                type: "decision",
-                text: "The schema detail is not final, but waiting would slow the organization down. I will publish the assumption and continue with a narrow interface that can be reconciled later.",
-                beforeToolIndex: 1
-              },
-              {
-                type: "tool_intent",
-                tool: "write_file",
-                path: "src/example.ts",
-                text: "Now I can write the reviewable implementation packet. The goal is a small concrete artifact, not a perfect final product.",
-                beforeToolIndex: 2
-              }
-            ],
-            toolCalls: [
-              {
-                tool: "create_branch | write_file | delete_file | commit_changes | open_pr | complete_task | research_web | fetch_url | post_book_entry | read_book | answer_book_entry | read_signals | mark_signal_read",
-                branch: "optional branch name",
-                path: "optional workspace-relative path",
-                content: "optional file content",
-                message: "optional commit message",
-                title: "optional PR title",
-                summary: "optional PR summary",
-                entryId: "optional Orvix Book entry id for answer_book_entry or mark_signal_read",
-                signalId: "optional signal id for mark_signal_read",
-                entryType: "optional Orvix Book entry type",
-                toAgentIds: ["optional mentioned agent ids"],
-                topics: ["optional routing topics"],
-                priority: "optional priority"
-              }
-            ],
-            summaryGuidance: "Mention your role, coordination assumptions, files you will create, and next PR action."
-          }
-        })
-      }
-    ], { temperature: 0.15, role: "agent", nativeTools: input.allowedTools, requireNativeTool: true });
-
-    return {
-      plan: (() => {
-        const parsed = result.content.trim()
-          ? parseQwenJson<AgentExecutionPlan>(result.content)
-          : {
-              summary: "Native Qwen tool call plan",
-              transcript: [],
-              toolCalls: []
-            };
-        return {
-          ...parsed,
-          toolCalls: result.nativeToolCalls?.length ? result.nativeToolCalls : parsed.toolCalls
-        };
-      })(),
-      content: result.content,
-      reasoningContent: result.reasoningContent,
-      raw: result.raw
-    };
+    return parseQwenJson<{ message: string }>(await this.answerBookQuestion(input));
   }
 
   async reviewWorkspacePullRequest(input: {

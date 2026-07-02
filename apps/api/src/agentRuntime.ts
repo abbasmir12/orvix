@@ -6,7 +6,7 @@ import {
   type AgentToolName,
   type SimulationState
 } from "@orvix/core";
-import { isQwenConfigured, QwenClient } from "@orvix/qwen";
+import { createAgentSessionMessages, isQwenConfigured, QwenClient, type ChatMessage } from "@orvix/qwen";
 import {
   branchExists,
   checkoutGitBranch,
@@ -36,6 +36,7 @@ import {
   type MissionRun
 } from "./run.js";
 import { getBookContext, inferTopics, markSignalRead, normalizeBookEntryType, postBookEntry } from "./book.js";
+import { envPositiveInt } from "./envConfig.js";
 import { fetchUrlForAgent, researchWeb } from "./research.js";
 
 export function executeGitTool(
@@ -132,82 +133,53 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
   postSpeculativeDependencyNotes(run, agent, task);
   const bookContext = getBookContext(run, agent.id, task.id);
   const reviewFeedback = reviewFeedbackForTask(run, task);
-  let rawPlan = createMockAgentPlan(agent, task);
-  let qwenPlanContent: string | undefined;
-  let qwenReasoningContent: string | undefined;
+  const revisionNumber = getExecutedTaskRevisionCount(run, task.id) + (options.revision ? 1 : 0);
+
+  appendEvent(
+    run,
+    `${agent.name} started ${options.revision ? "revision session" : "interactive workspace session"} for ${task.title}`,
+    "info"
+  );
+  updateAgentTaskState(run, agent.id, task.id, "active", options.revision ? "Applying reviewer changes" : "Working in agent session");
+
+  let outcome: AgentSessionOutcome;
   if (run.mode === "qwen" && isQwenConfigured()) {
     try {
-      const qwen = new QwenClient();
-      const detailedPlan = await qwen.planAgentExecutionDetailedJson({
-        mission: run.mission,
-        agent,
-        task,
-        allowedTools,
+      outcome = await runAgentSession(run, agent, task, workspace, allowedTools, {
         workspaceFiles,
         bookContext,
-        organization: run.state.organization,
-        agents: run.state.agents,
-        tasks: run.state.tasks,
-        pullRequests: run.state.pullRequests,
         reviewFeedback,
-        orvixMap: orvixMapContext(run),
-        mapWorkPacket: mapWorkPacketForAgent(run, agent.id, task.id)
+        revision: Boolean(options.revision)
       });
-      rawPlan = detailedPlan.plan;
-      qwenPlanContent = detailedPlan.content;
-      qwenReasoningContent = detailedPlan.reasoningContent;
-
-      if (!hasImplementationToolCall(rawPlan)) {
-        appendEvent(run, `MasterMind asked ${agent.name} to revise a coordination-only plan into concrete workspace tool calls`, "info");
-        const repairedPlan = await qwen.planAgentExecutionDetailedJson({
-          mission: run.mission,
-          agent,
-          task,
-          allowedTools,
-          workspaceFiles,
-          bookContext,
-          organization: run.state.organization,
-          agents: run.state.agents,
-          tasks: run.state.tasks,
-          pullRequests: run.state.pullRequests,
-          reviewFeedback,
-          orvixMap: orvixMapContext(run),
-          mapWorkPacket: mapWorkPacketForAgent(run, agent.id, task.id),
-          planRepair: {
-            reason: "The previous plan contained no write_file or delete_file tool calls, so it could not produce reviewable workspace evidence.",
-            instruction: "Return a corrected plan for the same task. Keep useful coordination calls only if they directly support implementation, but include concrete write_file or delete_file calls before commit/open_pr."
-          }
-        });
-        rawPlan = repairedPlan.plan;
-        qwenPlanContent = repairedPlan.content;
-        qwenReasoningContent = repairedPlan.reasoningContent;
-      }
     } catch (error) {
-      if (run.mode === "qwen") {
-        const message = `${agent.name} Qwen plan failed; no deterministic implementation fallback was applied: ${error instanceof Error ? error.message : "Unknown error"}`;
-        updateAgentTaskState(run, agent.id, task.id, "blocked", "Qwen planning failed");
-        appendEvent(run, message, "warning");
-        writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
-        broadcast(run, "state", run.state);
-        return {
-          ok: false,
-          agent,
-          task,
-          error: "qwen_plan_failed"
-        };
-      }
-      appendEvent(
-        run,
-        `${agent.name} Qwen plan failed; using deterministic ${options.revision ? "revision" : "execution"} plan: ${error instanceof Error ? error.message : "Unknown error"}`,
-        "warning"
-      );
+      const message = `${agent.name} Qwen session failed; no deterministic implementation fallback was applied: ${error instanceof Error ? error.message : "Unknown error"}`;
+      updateAgentTaskState(run, agent.id, task.id, "blocked", "Qwen agent session failed");
+      appendEvent(run, message, "warning");
+      writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+      broadcast(run, "state", run.state);
+      return {
+        ok: false,
+        agent,
+        task,
+        error: "qwen_session_failed"
+      };
     }
+  } else {
+    outcome = await runMockAgentPlan(run, agent, task, workspace, allowedTools, {
+      revision: Boolean(options.revision),
+      revisionNumber
+    });
   }
-  const revisionNumber = getExecutedTaskRevisionCount(run, task.id) + (options.revision ? 1 : 0);
-  if (run.mode === "qwen" && !hasImplementationToolCall(rawPlan)) {
+
+  const results = outcome.results;
+  const hasImplementation = results.some((entry) =>
+    entry.result.ok && (entry.toolCall.tool === "write_file" || entry.toolCall.tool === "delete_file")
+  );
+
+  if (run.mode === "qwen" && !hasImplementation && implementationTaskRequiresEvidence(task)) {
     const retryCount = getNoImplementationRetryCount(run, task.id);
     if (retryCount < 1) {
-      const message = `${agent.name} returned no write_file or delete_file tool calls after MasterMind repair; MasterMind is requeuing one concrete implementation retry with an explicit Orvix Map contract.`;
+      const message = `${agent.name} finished the session without successful write_file or delete_file calls; MasterMind is requeuing one concrete implementation retry with an explicit Orvix Map contract.`;
       postBookEntry(run, {
         type: "contract",
         fromAgentId: "mastermind-agent",
@@ -219,7 +191,7 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
         priority: "urgent",
         status: "final",
         message: [
-          `Your previous plan for ${task.title} did not include write_file or delete_file after repair.`,
+          `Your previous session for ${task.title} produced no successful write_file or delete_file calls.`,
           "Retry this task once with concrete source/config/test changes.",
           "Use the Orvix Map and your mapWorkPacket as the build contract.",
           "Do not submit only markdown, planning notes, or Orvix Book coordination unless the task is explicitly review-only."
@@ -238,7 +210,7 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
       };
     }
 
-    const message = `${agent.name} returned no write_file or delete_file tool calls after MasterMind repair and retry; Orvix will not synthesize implementation fallback in Qwen mode.`;
+    const message = `${agent.name} produced no implementation tool calls after retry; Orvix will not synthesize implementation fallback in Qwen mode.`;
     updateAgentTaskState(run, agent.id, task.id, "blocked", "No reviewable agent-authored implementation");
     appendEvent(run, message, "warning");
     writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
@@ -251,49 +223,7 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
     };
   }
 
-  const plan = normalizeAgentExecutionPlan(rawPlan, agent, task, {
-    revision: Boolean(options.revision),
-    revisionNumber,
-    allowFallbackEvidence: run.mode !== "qwen"
-  });
-
-  const results = [];
-  appendEvent(
-    run,
-    `${agent.name} started ${options.revision ? "revision" : "real workspace execution"} for ${task.title}`,
-    "info"
-  );
-  updateAgentTaskState(run, agent.id, task.id, "active", options.revision ? "Applying reviewer changes" : "Executing workspace tools");
-
-  const executableToolCalls = plan.toolCalls.slice(0, agentExecutionToolCallLimit);
-  if (plan.toolCalls.length > executableToolCalls.length) {
-    appendEvent(
-      run,
-      `${agent.name} execution plan was capped at ${agentExecutionToolCallLimit} tool calls; remaining calls were skipped`,
-      "warning"
-    );
-  }
-
-  for (const toolCall of executableToolCalls) {
-    let result = await executeAgentToolCall(run, agent, task, toolCall, allowedTools, workspace);
-    if (isToolAccessDenied(result) && handleMasterMindToolAccessIntervention(run, agent, task, toolCall, allowedTools)) {
-      result = await executeAgentToolCall(run, agent, task, toolCall, allowedTools, workspace);
-    }
-    results.push({ toolCall, result });
-    const failureReason = !result.ok && "error" in result ? `: ${result.error}` : "";
-    appendEvent(
-      run,
-      `${agent.name} ${result.ok ? "completed" : "failed"} tool ${toolCall.tool}${failureReason}`,
-      result.ok ? "success" : "warning"
-    );
-
-    if (!result.ok) {
-      updateAgentTaskState(run, agent.id, task.id, "blocked", `Blocked on ${toolCall.tool}`);
-      break;
-    }
-  }
-
-  const failed = results.some((entry) => !entry.result.ok);
+  const failed = outcome.failed;
   const evidence = hasReviewableBranchEvidence(run, task.branch);
   if (!failed && evidence.ok && evidence.reviewable) {
     updateAgentTaskState(run, agent.id, task.id, "completed", "Workspace execution complete");
@@ -310,6 +240,8 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
   } else if (!failed) {
     updateAgentTaskState(run, agent.id, task.id, "blocked", `Missing branch evidence for review: ${evidence.reason}`);
     appendEvent(run, `${agent.name} finished without reviewable branch evidence: ${evidence.reason}`, "warning");
+  } else {
+    updateAgentTaskState(run, agent.id, task.id, "blocked", `Session ended: ${outcome.endedBy}`);
   }
 
   addReasoningArtifact(run, {
@@ -322,14 +254,18 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
       revisionNumber,
       allowedTools,
       bookContext,
-      qwen: {
-        content: qwenPlanContent,
-        reasoningContent: qwenReasoningContent
+      session: {
+        turns: outcome.turns,
+        endedBy: outcome.endedBy
       },
-      plan,
+      plan: {
+        summary: outcome.summary,
+        transcript: outcome.transcript,
+        toolCalls: results.map((entry) => entry.toolCall)
+      },
       results
     }),
-    reasoningContent: qwenReasoningContent
+    reasoningContent: outcome.reasoningContent
   });
   writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
   broadcast(run, "state", run.state);
@@ -339,10 +275,290 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
     agent,
     task,
     allowedTools,
-    plan,
+    plan: {
+      summary: outcome.summary,
+      transcript: outcome.transcript,
+      toolCalls: results.map((entry) => entry.toolCall)
+    },
     results,
     workspace,
     git: getGitStatus(workspace)
+  };
+}
+
+type AgentToolResult = Awaited<ReturnType<typeof executeAgentToolCall>>;
+
+type AgentSessionOutcome = {
+  results: Array<{ toolCall: AgentToolCall; result: AgentToolResult; harness?: boolean }>;
+  transcript: NonNullable<AgentExecutionPlan["transcript"]>;
+  summary: string;
+  turns: number;
+  endedBy: "open_pr" | "complete_task" | "turn_limit" | "no_more_tools" | "tool_failures" | "plan_complete";
+  reasoningContent?: string;
+  failed: boolean;
+};
+
+function broadcastAgentTurn(
+  run: MissionRun,
+  agent: Agent,
+  task: SimulationState["tasks"][number],
+  turn: number,
+  payload: { kind: "note" | "tool" | "harness"; tool?: string; path?: string; ok?: boolean; detail?: string }
+) {
+  broadcast(run, "agent_turn", {
+    missionId: run.id,
+    agentId: agent.id,
+    agentName: agent.name,
+    taskId: task.id,
+    branch: task.branch,
+    turn,
+    at: new Date().toISOString(),
+    ...payload
+  });
+}
+
+/** Compact, model-facing serialization of a tool result (no giant diffs or file bodies beyond caps). */
+function toolResultForModel(result: AgentToolResult): string {
+  const record = result as Record<string, unknown>;
+  if (!record || typeof record !== "object") {
+    return JSON.stringify({ ok: false, error: "no_result" });
+  }
+  const compact: Record<string, unknown> = { ok: record.ok, tool: record.tool };
+  if (record.error) compact.error = record.error;
+  if (typeof record.path === "string") compact.path = record.path;
+  if (typeof record.branch === "string") compact.branch = record.branch;
+  if (typeof record.content === "string") compact.content = truncateForModel(record.content, 6000);
+  if (typeof record.output === "string") compact.output = truncateForModel(record.output, 4000);
+  if (typeof record.bytes === "number") compact.bytes = record.bytes;
+  if (typeof record.additions === "number") {
+    compact.additions = record.additions;
+    compact.removals = record.removals;
+  }
+  if (typeof record.existedBefore === "boolean") compact.existedBefore = record.existedBefore;
+  if (typeof record.exists === "boolean") compact.exists = record.exists;
+  if (typeof record.entryId === "string") compact.entryId = record.entryId;
+  if (Array.isArray(record.files)) {
+    compact.files = (record.files as Array<{ path?: string; type?: string }>)
+      .slice(0, 150)
+      .map((file) => `${file.type === "directory" ? "dir " : "file "}${file.path ?? ""}`);
+  }
+  if (Array.isArray(record.results)) compact.results = record.results;
+  return JSON.stringify(compact);
+}
+
+function truncateForModel(value: string, limit: number) {
+  return value.length <= limit ? value : `${value.slice(0, limit)}\n... [truncated ${value.length - limit} characters]`;
+}
+
+function implementationTaskRequiresEvidence(task?: SimulationState["tasks"][number]) {
+  if (!task) return true;
+  const text = `${task.title} ${task.acceptanceCriteria.join(" ")}`.toLowerCase();
+  return !/review-only|review only|audit only|advisory/.test(text);
+}
+
+/**
+ * The multi-turn agent session: the model calls tools, Orvix executes them in
+ * the agent's worktree, results go back as tool messages, and the loop runs
+ * until the agent opens a PR, completes the task, or hits its budget.
+ * Harness bookkeeping (auto-commit/auto-PR of the agent's own work) is
+ * labelled as such; Orvix never writes implementation content itself.
+ */
+async function runAgentSession(
+  run: MissionRun,
+  agent: Agent,
+  task: SimulationState["tasks"][number],
+  workspace: Workspace,
+  allowedTools: AgentToolName[],
+  context: {
+    workspaceFiles: unknown;
+    bookContext: unknown;
+    reviewFeedback: unknown;
+    revision: boolean;
+  }
+): Promise<AgentSessionOutcome> {
+  const qwen = new QwenClient();
+  const maxTurns = envPositiveInt("QWEN_AGENT_MAX_TURNS", 10, 24);
+  const maxToolCalls = agentExecutionToolCallLimit;
+  const messages: ChatMessage[] = createAgentSessionMessages({
+    mission: run.mission,
+    agent,
+    task,
+    allowedTools,
+    workspaceFiles: context.workspaceFiles,
+    bookContext: context.bookContext as never,
+    organization: run.state.organization,
+    agents: run.state.agents,
+    tasks: run.state.tasks,
+    pullRequests: run.state.pullRequests,
+    reviewFeedback: context.reviewFeedback,
+    orvixMap: orvixMapContext(run),
+    mapWorkPacket: mapWorkPacketForAgent(run, agent.id, task.id),
+    revision: context.revision,
+    maxTurns,
+    maxToolCalls
+  });
+
+  const results: AgentSessionOutcome["results"] = [];
+  const transcript: AgentSessionOutcome["transcript"] = [];
+  let endedBy: AgentSessionOutcome["endedBy"] = "turn_limit";
+  let reasoningContent: string | undefined;
+  let totalToolCalls = 0;
+  let consecutiveFailures = 0;
+  let nudged = false;
+  let turn = 0;
+
+  for (; turn < maxTurns; turn += 1) {
+    const response = await qwen.agentSessionTurn(messages, allowedTools, { requireTool: turn === 0 });
+    reasoningContent = response.reasoningContent ?? reasoningContent;
+    messages.push({
+      role: "assistant",
+      content: response.content ?? "",
+      tool_calls: Array.isArray(response.message?.tool_calls) ? response.message.tool_calls as unknown[] : undefined
+    });
+
+    const narration = response.content?.trim();
+    if (narration) {
+      transcript.push({ type: "observation", text: narration.slice(0, 500) });
+      broadcastAgentTurn(run, agent, task, turn, { kind: "note", detail: narration.slice(0, 300) });
+    }
+
+    const calls = response.nativeToolCalls ?? [];
+    if (calls.length === 0) {
+      const wroteSomething = results.some((entry) => entry.result.ok && (entry.toolCall.tool === "write_file" || entry.toolCall.tool === "delete_file"));
+      if (!wroteSomething && !nudged) {
+        nudged = true;
+        messages.push({
+          role: "user",
+          content: "You have not produced any implementation evidence yet. Continue the session with concrete tool calls: read the files you need, then write_file the implementation, commit_changes, and open_pr. If this task is truly review-only, call complete_task."
+        });
+        continue;
+      }
+      endedBy = "no_more_tools";
+      break;
+    }
+
+    let terminal: AgentSessionOutcome["endedBy"] | null = null;
+    for (const [index, toolCall] of calls.entries()) {
+      if (totalToolCalls >= maxToolCalls) {
+        endedBy = "turn_limit";
+        terminal = "turn_limit";
+        break;
+      }
+      totalToolCalls += 1;
+
+      let result = await executeAgentToolCall(run, agent, task, toolCall, allowedTools, workspace);
+      if (isToolAccessDenied(result) && handleMasterMindToolAccessIntervention(run, agent, task, toolCall, allowedTools)) {
+        result = await executeAgentToolCall(run, agent, task, toolCall, allowedTools, workspace);
+      }
+      results.push({ toolCall, result });
+
+      const failureReason = !result.ok && "error" in result ? `: ${result.error}` : "";
+      appendEvent(
+        run,
+        `${agent.name} ${result.ok ? "completed" : "failed"} tool ${toolCall.tool}${failureReason}`,
+        result.ok ? "success" : "warning"
+      );
+      broadcastAgentTurn(run, agent, task, turn, {
+        kind: "tool",
+        tool: toolCall.tool,
+        path: toolCall.path,
+        ok: Boolean(result.ok),
+        detail: !result.ok && "error" in result ? String(result.error).slice(0, 200) : undefined
+      });
+
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.callId ?? `call-${turn}-${index}`,
+        content: toolResultForModel(result)
+      });
+
+      consecutiveFailures = result.ok ? 0 : consecutiveFailures + 1;
+      if (consecutiveFailures >= 4) {
+        terminal = "tool_failures";
+        break;
+      }
+      if (result.ok && (toolCall.tool === "open_pr" || toolCall.tool === "complete_task")) {
+        terminal = toolCall.tool;
+      }
+    }
+
+    if (terminal) {
+      endedBy = terminal;
+      break;
+    }
+  }
+
+  const wroteFiles = results.some((entry) => entry.result.ok && (entry.toolCall.tool === "write_file" || entry.toolCall.tool === "delete_file"));
+  const committed = results.some((entry) => entry.result.ok && entry.toolCall.tool === "commit_changes");
+  const openedPr = results.some((entry) => entry.result.ok && entry.toolCall.tool === "open_pr");
+
+  if (wroteFiles && !committed) {
+    const commitResult = commitWorkspaceChanges(workspace, `${context.revision ? "fix" : "feat"}: ${task.title}`.slice(0, 100));
+    results.push({
+      toolCall: { tool: "commit_changes", message: `${context.revision ? "fix" : "feat"}: ${task.title}` },
+      result: commitResult,
+      harness: true
+    });
+    appendEvent(run, `Orvix committed ${agent.name}'s session work (agent forgot commit_changes)`, "info");
+    broadcastAgentTurn(run, agent, task, turn, { kind: "harness", tool: "commit_changes", ok: commitResult.ok });
+  }
+
+  if (wroteFiles && !openedPr) {
+    updatePullRequestFromTask(run, task, "In progress", "Reviewing", {
+      summary: `${agent.name} session work for ${task.title} (PR opened by Orvix bookkeeping).`
+    });
+    results.push({
+      toolCall: { tool: "open_pr", title: task.title, summary: "Opened by Orvix bookkeeping after agent session." },
+      result: { ok: true, tool: "open_pr", branch: task.branch, output: "Opened PR from session bookkeeping" } as AgentToolResult,
+      harness: true
+    });
+    appendEvent(run, `Orvix opened the review packet for ${agent.name}'s session (agent forgot open_pr)`, "info");
+    broadcastAgentTurn(run, agent, task, turn, { kind: "harness", tool: "open_pr", ok: true });
+  }
+
+  const summaryNarration = transcript.length > 0
+    ? transcript[transcript.length - 1].text
+    : `${agent.name} completed an interactive session (${endedBy}).`;
+
+  return {
+    results,
+    transcript,
+    summary: summaryNarration.slice(0, 300),
+    turns: turn + 1,
+    endedBy,
+    reasoningContent,
+    failed: endedBy === "tool_failures",
+  };
+}
+
+/** Mock-mode execution keeps the deterministic doc-note plan for local demos. */
+async function runMockAgentPlan(
+  run: MissionRun,
+  agent: Agent,
+  task: SimulationState["tasks"][number],
+  workspace: Workspace,
+  allowedTools: AgentToolName[],
+  options: { revision: boolean; revisionNumber: number }
+): Promise<AgentSessionOutcome> {
+  const plan = normalizeAgentExecutionPlan(createMockAgentPlan(agent, task), agent, task, options);
+  const results: AgentSessionOutcome["results"] = [];
+
+  for (const toolCall of plan.toolCalls.slice(0, agentExecutionToolCallLimit)) {
+    const result = await executeAgentToolCall(run, agent, task, toolCall, allowedTools, workspace);
+    results.push({ toolCall, result });
+    if (!result.ok) {
+      break;
+    }
+  }
+
+  const failed = results.some((entry) => !entry.result.ok);
+  return {
+    results,
+    transcript: plan.transcript ?? [],
+    summary: plan.summary,
+    turns: 1,
+    endedBy: failed ? "tool_failures" : "plan_complete",
+    failed
   };
 }
 
@@ -429,11 +645,16 @@ export function postSpeculativeDependencyNotes(
   });
 }
 
+/**
+ * Mock-mode only: orders the deterministic demo plan into the standard
+ * branch -> write -> commit -> PR sequence. Qwen mode uses runAgentSession
+ * and never rewrites the agent's tool calls.
+ */
 export function normalizeAgentExecutionPlan(
   plan: AgentExecutionPlan,
   agent: Agent,
   task: SimulationState["tasks"][number],
-  options: { revision?: boolean; revisionNumber?: number; allowFallbackEvidence?: boolean } = {}
+  options: { revision?: boolean; revisionNumber?: number } = {}
 ): AgentExecutionPlan {
   const coordinationCalls = plan.toolCalls.filter((call) =>
     call.tool === "post_book_entry" ||
@@ -450,35 +671,6 @@ export function normalizeAgentExecutionPlan(
   const deleteCalls: AgentToolCall[] = plan.toolCalls
     .filter((call) => call.tool === "delete_file")
     .map((call) => ({ ...call, branch: undefined }));
-  const allowFallbackEvidence = options.allowFallbackEvidence ?? true;
-  const implementationCalls = allowFallbackEvidence ? createImplementationEvidenceCalls(agent, task, options) : [];
-  const hasImplementationEvidence = writeCalls.some((call) => isImplementationEvidencePath(call.path));
-  if (allowFallbackEvidence && !hasImplementationEvidence && !options.revision) {
-    writeCalls.push(...implementationCalls);
-  }
-
-  if (allowFallbackEvidence && writeCalls.length === 0 && !options.revision) {
-    const safeAgentName = agent.name.replace(/[^a-zA-Z0-9 ]/g, "").trim() || "Agent";
-    writeCalls.push({
-      tool: "write_file",
-      path: `docs/${task.id}.md`,
-      content: [
-        `# ${task.title}`,
-        "",
-        `Owner: ${safeAgentName}`,
-        `Branch: ${task.branch}`,
-        "",
-        "## Acceptance Criteria",
-        "",
-        ...task.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-        "",
-        "## Delivery Evidence",
-        "",
-        "This delivery note was added by Orvix because the agent turn did not create file evidence before review.",
-        ""
-      ].join("\n")
-    });
-  }
 
   const toolCalls: AgentToolCall[] = [
     ...coordinationCalls,
@@ -547,414 +739,6 @@ export function createDefaultTranscript(
       tool: "open_pr",
       text: "With the branch committed, the agent can hand the packet to Critic Council for review instead of continuing to expand scope.",
       beforeToolIndex: prIndex
-    }
-  ];
-}
-
-export function isImplementationEvidencePath(path?: string) {
-  if (!path) return false;
-  if (/^docs\//i.test(path) || /^work\//i.test(path)) return false;
-  return /\.(ts|tsx|js|jsx|sql|json|yaml|yml|test\.ts|spec\.ts|mdx)$/i.test(path);
-}
-
-export function hasImplementationToolCall(plan: AgentExecutionPlan) {
-  return plan.toolCalls.some((call) => call.tool === "write_file" || call.tool === "delete_file");
-}
-
-export function createImplementationEvidenceCalls(
-  agent: Agent,
-  task: SimulationState["tasks"][number],
-  options: { revision?: boolean; revisionNumber?: number } = {}
-): AgentToolCall[] {
-  const text = `${agent.name} ${agent.role} ${task.title} ${task.acceptanceCriteria.join(" ")} ${task.filesLikelyAffected.join(" ")}`.toLowerCase();
-  const revisionSuffix = options.revision ? `\n// Revision ${options.revisionNumber ?? 1}: responds to reviewer feedback with concrete implementation evidence.\n` : "";
-
-  if (/auth|oauth|sso|credential|password|session|token|argon2|rbac|security/.test(text)) {
-    return [
-      {
-        tool: "write_file",
-        path: "src/auth/tenantAuth.ts",
-        content: [
-          "export type AuthProvider = \"password\" | \"okta\" | \"auth0\" | \"google\" | \"microsoft\";",
-          "",
-          "export type TenantSession = {",
-          "  userId: string;",
-          "  tenantId: string;",
-          "  roles: string[];",
-          "  provider: AuthProvider;",
-          "  issuedAt: string;",
-          "  expiresAt: string;",
-          "};",
-          "",
-          "export function assertTenantBoundary(session: TenantSession, tenantId: string) {",
-          "  if (!session.tenantId || session.tenantId !== tenantId) {",
-          "    throw new Error(\"tenant_boundary_violation\");",
-          "  }",
-          "}",
-          "",
-          "export function createPasswordHashPolicy(tenantPepperId: string) {",
-          "  if (!tenantPepperId.trim()) throw new Error(\"tenant_pepper_required\");",
-          "  return { algorithm: \"argon2id\", memoryKiB: 19456, iterations: 2, parallelism: 1, tenantPepperId };",
-          "}",
-          "",
-          "export function createPasswordResetPolicy(now = new Date()) {",
-          "  return {",
-          "    expiresAt: new Date(now.getTime() + 15 * 60 * 1000).toISOString(),",
-          "    singleUse: true,",
-          "    tokenEntropyBits: 256",
-          "  };",
-          "}",
-          "",
-          "export const oauth21Requirements = {",
-          "  pkceRequired: true,",
-          "  implicitFlowAllowed: false,",
-          "  redirectUriExactMatch: true,",
-          "  supportedProviders: [\"okta\", \"auth0\"] satisfies AuthProvider[]",
-          "};",
-          revisionSuffix
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "src/auth/sso.ts",
-        content: [
-          "import { oauth21Requirements, type AuthProvider } from \"./tenantAuth\";",
-          "",
-          "export type SsoCallback = { provider: AuthProvider; code: string; state: string; tenantId: string };",
-          "",
-          "export function validateSsoCallback(callback: SsoCallback) {",
-          "  if (!oauth21Requirements.supportedProviders.includes(callback.provider)) throw new Error(\"unsupported_provider\");",
-          "  if (!callback.code || !callback.state) throw new Error(\"invalid_oauth_callback\");",
-          "  if (!callback.tenantId) throw new Error(\"tenant_required\");",
-          "  return {",
-          "    provider: callback.provider,",
-          "    tenantId: callback.tenantId,",
-          "    tokenExchange: \"authorization_code_with_pkce\"",
-          "  };",
-          "}",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "db/policies/tenant_rls.sql",
-        content: [
-          "create table if not exists tenants (",
-          "  id uuid primary key,",
-          "  name text not null",
-          ");",
-          "",
-          "create table if not exists users (",
-          "  id uuid primary key,",
-          "  tenant_id uuid not null references tenants(id),",
-          "  email text not null,",
-          "  password_hash text,",
-          "  roles text[] not null default '{}',",
-          "  unique (tenant_id, email)",
-          ");",
-          "",
-          "alter table users enable row level security;",
-          "",
-          "create policy tenant_isolation_users on users",
-          "  using (tenant_id::text = current_setting('app.tenant_id', true))",
-          "  with check (tenant_id::text = current_setting('app.tenant_id', true));",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "tests/auth-tenancy.spec.ts",
-        content: [
-          "import { assertTenantBoundary, createPasswordHashPolicy, createPasswordResetPolicy, oauth21Requirements } from \"../src/auth/tenantAuth\";",
-          "import { validateSsoCallback } from \"../src/auth/sso\";",
-          "",
-          "const session = {",
-          "  userId: \"user_1\",",
-          "  tenantId: \"tenant_a\",",
-          "  roles: [\"admin\"],",
-          "  provider: \"password\" as const,",
-          "  issuedAt: new Date(0).toISOString(),",
-          "  expiresAt: new Date(3600000).toISOString()",
-          "};",
-          "",
-          "assertTenantBoundary(session, \"tenant_a\");",
-          "const hashPolicy = createPasswordHashPolicy(\"pepper_tenant_a_v1\");",
-          "if (hashPolicy.algorithm !== \"argon2id\") throw new Error(\"argon2id_required\");",
-          "const reset = createPasswordResetPolicy(new Date(0));",
-          "if (!reset.singleUse || reset.tokenEntropyBits < 256) throw new Error(\"weak_reset_policy\");",
-          "if (!oauth21Requirements.pkceRequired || oauth21Requirements.implicitFlowAllowed) throw new Error(\"oauth21_policy_failed\");",
-          "validateSsoCallback({ provider: \"okta\", code: \"code\", state: \"state\", tenantId: \"tenant_a\" });",
-          ""
-        ].join("\n")
-      }
-    ];
-  }
-
-  if (/tenant|isolation|branding|onboarding|segregation|purge/.test(text)) {
-    return [
-      {
-        tool: "write_file",
-        path: "src/tenancy/tenantIsolation.ts",
-        content: [
-          "export type TenantContext = { tenantId: string; userId: string; roles: string[] };",
-          "export type TenantResource = { tenantId: string; id: string };",
-          "",
-          "export function requireTenantAccess(context: TenantContext, resource: TenantResource) {",
-          "  if (!context.tenantId || context.tenantId !== resource.tenantId) {",
-          "    throw new Error(\"cross_tenant_access_denied\");",
-          "  }",
-          "  return true;",
-          "}",
-          "",
-          "export function tenantRoute(path: string, tenantId: string) {",
-          "  if (!tenantId.trim()) throw new Error(\"tenant_required\");",
-          "  return `/t/${tenantId}${path.startsWith(\"/\") ? path : `/${path}`}`;",
-          "}",
-          "",
-          "export function tenantDeletionPlan(tenantId: string) {",
-          "  return [\"notes\", \"contacts\", \"users\", \"branding\", \"tenants\"].map((table) => ({ table, tenantId, hardDelete: true, auditRetained: true }));",
-          "}",
-          revisionSuffix
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "src/tenancy/branding.ts",
-        content: [
-          "export type TenantBranding = { tenantId: string; logoUrl: string; theme: \"light\" | \"dark\" | \"system\" };",
-          "",
-          "export function injectTenantBranding(branding: TenantBranding) {",
-          "  if (!branding.logoUrl.startsWith(\"/\")) throw new Error(\"unsafe_logo_url\");",
-          "  return {",
-          "    cacheKey: `tenant-branding:${branding.tenantId}`,",
-          "    maxRenderLatencyMs: 5000,",
-          "    variables: { logo: branding.logoUrl, theme: branding.theme }",
-          "  };",
-          "}",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "tests/tenant-isolation.spec.ts",
-        content: [
-          "import { requireTenantAccess, tenantDeletionPlan, tenantRoute } from \"../src/tenancy/tenantIsolation\";",
-          "import { injectTenantBranding } from \"../src/tenancy/branding\";",
-          "",
-          "requireTenantAccess({ tenantId: \"tenant_a\", userId: \"u1\", roles: [\"admin\"] }, { tenantId: \"tenant_a\", id: \"contact_1\" });",
-          "",
-          "try {",
-          "  requireTenantAccess({ tenantId: \"tenant_a\", userId: \"u1\", roles: [] }, { tenantId: \"tenant_b\", id: \"contact_2\" });",
-          "  throw new Error(\"expected_cross_tenant_denial\");",
-          "} catch (error) {",
-          "  if (!(error instanceof Error) || error.message !== \"cross_tenant_access_denied\") throw error;",
-          "}",
-          "",
-          "if (!tenantRoute(\"/dashboard\", \"tenant_a\").startsWith(\"/t/tenant_a\")) throw new Error(\"tenant_route_failed\");",
-          "if (tenantDeletionPlan(\"tenant_a\").some((step) => !step.hardDelete || !step.auditRetained)) throw new Error(\"purge_plan_failed\");",
-          "if (injectTenantBranding({ tenantId: \"tenant_a\", logoUrl: \"/logo.svg\", theme: \"dark\" }).maxRenderLatencyMs > 5000) throw new Error(\"branding_latency_failed\");",
-          ""
-        ].join("\n")
-      }
-    ];
-  }
-
-  if (/database|schema|migration|rls|model/.test(text)) {
-    return [
-      {
-        tool: "write_file",
-        path: "db/schema.sql",
-        content: [
-          "create table if not exists contacts (",
-          "  id uuid primary key,",
-          "  tenant_id uuid not null,",
-          "  owner_user_id uuid not null,",
-          "  name text not null,",
-          "  email text,",
-          "  created_at timestamptz not null default now()",
-          ");",
-          "",
-          "create table if not exists notes (",
-          "  id uuid primary key,",
-          "  tenant_id uuid not null,",
-          "  contact_id uuid not null references contacts(id),",
-          "  body text not null,",
-          "  created_at timestamptz not null default now()",
-          ");",
-          "",
-          "alter table contacts enable row level security;",
-          "alter table notes enable row level security;",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "tests/schema-contract.spec.ts",
-        content: "export const requiredTables = [\"contacts\", \"notes\", \"users\", \"tenants\"];\n"
-      }
-    ];
-  }
-
-  if (/api|route|endpoint|contacts|notes|crud/.test(text)) {
-    return [
-      {
-        tool: "write_file",
-        path: "src/api/contacts.ts",
-        content: [
-          "export type ContactInput = { tenantId: string; ownerUserId: string; name: string; email?: string };",
-          "",
-          "export function validateContactInput(input: ContactInput) {",
-          "  if (!input.tenantId) throw new Error(\"tenant_required\");",
-          "  if (!input.ownerUserId) throw new Error(\"owner_required\");",
-          "  if (!input.name.trim()) throw new Error(\"name_required\");",
-          "  return input;",
-          "}",
-          "",
-          "export const contactRoutes = {",
-          "  list: \"GET /api/contacts\",",
-          "  create: \"POST /api/contacts\",",
-          "  update: \"PATCH /api/contacts/:id\",",
-          "  remove: \"DELETE /api/contacts/:id\"",
-          "};",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "tests/contacts-api.spec.ts",
-        content: "import { contactRoutes } from \"../src/api/contacts\";\nif (!contactRoutes.create.includes(\"POST\")) throw new Error(\"missing_create_route\");\n"
-      }
-    ];
-  }
-
-  if (/dashboard|ui|frontend|component|page|responsive/.test(text)) {
-    return [
-      {
-        tool: "write_file",
-        path: "app/page.tsx",
-        content: [
-          "const contacts = [",
-          "  { name: \"Alice Smith\", company: \"Acme Inc.\", stage: \"Qualified\", notes: 4 },",
-          "  { name: \"Bob Jones\", company: \"Northstar Labs\", stage: \"Proposal\", notes: 2 },",
-          "  { name: \"Mina Patel\", company: \"Vertex Studio\", stage: \"Onboarding\", notes: 7 }",
-          "];",
-          "",
-          "export default function Home() {",
-          "  return (",
-          "    <main className=\"product-shell\">",
-          "      <aside className=\"sidebar\">",
-          "        <strong>Orvix CRM</strong>",
-          "        <nav>",
-          "          <a href=\"/dashboard\">Dashboard</a>",
-          "          <a href=\"/contacts\">Contacts</a>",
-          "          <a href=\"/notes\">Notes</a>",
-          "          <a href=\"/login\">Login</a>",
-          "        </nav>",
-          "      </aside>",
-          "      <section className=\"workspace\">",
-          "        <p className=\"eyebrow\">Production CRM MVP</p>",
-          "        <h1>Customer operations dashboard</h1>",
-          "        <p className=\"lede\">Authentication, dashboard metrics, contacts, and notes are organized into one reviewable operator workflow.</p>",
-          "        <div className=\"metric-grid\">",
-          "          <article><span>Contacts</span><strong>248</strong><small>42 need follow-up</small></article>",
-          "          <article><span>Notes</span><strong>1,284</strong><small>Synced to customer records</small></article>",
-          "          <article><span>Pipeline</span><strong>$186K</strong><small>Open opportunities</small></article>",
-          "        </div>",
-          "        <section className=\"table-card\">",
-          "          <h2>Priority contacts</h2>",
-          "          {contacts.map((contact) => <div className=\"row\" key={contact.name}><span>{contact.name}</span><span>{contact.company}</span><span>{contact.stage}</span><span>{contact.notes} notes</span></div>)}",
-          "        </section>",
-          "      </section>",
-          "    </main>",
-          "  );",
-          "}",
-          revisionSuffix
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "app/dashboard/page.tsx",
-        content: "export default function DashboardPage() {\n  return <main className=\"route-shell\"><p className=\"eyebrow\">Dashboard</p><h1>CRM Dashboard</h1><p className=\"lede\">Revenue, contact health, notes, and team workload in one command view.</p></main>;\n}\n"
-      },
-      {
-        tool: "write_file",
-        path: "app/contacts/page.tsx",
-        content: "export default function ContactsPage() {\n  return <main className=\"route-shell\"><p className=\"eyebrow\">Contacts</p><h1>Contacts</h1><p className=\"lede\">Search, segment, and manage tenant-scoped customer records.</p></main>;\n}\n"
-      },
-      {
-        tool: "write_file",
-        path: "app/notes/page.tsx",
-        content: "export default function NotesPage() {\n  return <main className=\"route-shell\"><p className=\"eyebrow\">Notes</p><h1>Notes</h1><p className=\"lede\">Capture relationship context, follow-ups, and account history.</p></main>;\n}\n"
-      },
-      {
-        tool: "write_file",
-        path: "app/globals.css",
-        content: [
-          ":root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #14110d; color: #f5efe4; }",
-          "* { box-sizing: border-box; }",
-          "body { margin: 0; min-height: 100vh; background: #14110d; }",
-          "a { color: inherit; text-decoration: none; }",
-          ".product-shell { min-height: 100vh; display: grid; grid-template-columns: 240px 1fr; background: linear-gradient(135deg, #17130f 0%, #20170e 54%, #11100e 100%); }",
-          ".sidebar { border-right: 1px solid rgba(245,239,228,.12); padding: 28px 22px; background: rgba(255,255,255,.035); }",
-          ".sidebar strong { display: block; margin-bottom: 28px; color: #f7c873; font-size: 1.05rem; }",
-          ".sidebar nav { display: grid; gap: 8px; }",
-          ".sidebar a { border-radius: 8px; padding: 10px 12px; color: #d8cbbb; }",
-          ".workspace, .route-shell { width: min(1180px, 100%); padding: 56px; }",
-          ".eyebrow { margin: 0 0 12px; color: #f7c873; text-transform: uppercase; letter-spacing: .08em; font-size: .78rem; font-weight: 700; }",
-          "h1 { margin: 0; font-size: clamp(2.2rem, 6vw, 4.8rem); line-height: 1; letter-spacing: 0; }",
-          ".lede { color: #d8cbbb; font-size: clamp(1rem, 2vw, 1.25rem); max-width: 760px; line-height: 1.6; }",
-          ".metric-grid, .module-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-top: 28px; }",
-          "article, .table-card { border: 1px solid rgba(245,239,228,.12); border-radius: 8px; padding: 18px; background: rgba(255,255,255,.055); }",
-          "article span { display: block; color: #f7c873; font-size: .82rem; font-weight: 700; }",
-          "article strong { display: block; margin-top: 10px; font-size: 2rem; }",
-          "article small, article p { color: #c7b8a4; line-height: 1.5; }",
-          ".table-card { margin-top: 18px; }",
-          ".row { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 12px; padding: 12px 0; border-top: 1px solid rgba(245,239,228,.1); color: #d8cbbb; }",
-          "@media (max-width: 760px) { .product-shell { grid-template-columns: 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid rgba(245,239,228,.12); } .workspace, .route-shell { padding: 28px; } .row { grid-template-columns: 1fr; } }",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "src/ui/dashboardShell.tsx",
-        content: [
-          "type DashboardShellProps = { userName: string; contactCount: number; noteCount: number };",
-          "",
-          "export function DashboardShell(props: DashboardShellProps) {",
-          "  return (",
-          "    <main aria-label=\"CRM dashboard\">",
-          "      <header>Welcome {props.userName}</header>",
-          "      <section aria-label=\"Pipeline summary\">",
-          "        <span>Contacts: {props.contactCount}</span>",
-          "        <span>Notes: {props.noteCount}</span>",
-          "      </section>",
-          "    </main>",
-          "  );",
-          "}",
-          ""
-        ].join("\n")
-      },
-      {
-        tool: "write_file",
-        path: "tests/dashboard-shell.spec.ts",
-        content: "export const dashboardA11yContract = { landmarks: [\"main\", \"header\"], responsive: true };\n"
-      }
-    ];
-  }
-
-  return [
-    {
-      tool: "write_file",
-      path: `src/delivery/${task.id}.ts`,
-      content: [
-        `export const deliveryPacket = ${JSON.stringify({
-          taskId: task.id,
-          owner: agent.name,
-          acceptanceCriteria: task.acceptanceCriteria,
-          revision: options.revision ? options.revisionNumber ?? 1 : 0
-        }, null, 2)} as const;`,
-        ""
-      ].join("\n")
     }
   ];
 }

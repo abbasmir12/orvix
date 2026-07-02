@@ -59,7 +59,7 @@ export function createStaticPrReviewDecision(
     /(^|\/)(package\.json|vite\.config\.[tj]s|tsconfig\.json|tailwind\.config\.[tj]s|next\.config\.[tj]s)$/.test(file)
   );
   const markdownOnly = changedFiles.every((file) => /\.(md|mdx|txt)$/i.test(file) || /^(docs|work)\//.test(file));
-  if (!isNonBlockingReviewerPr(run, pr) && implementationTaskRequiresSource(task) && markdownOnly && sourceLike.length === 0) {
+  if (run.mode === "qwen" && !isNonBlockingReviewerPr(run, pr) && implementationTaskRequiresSource(task) && markdownOnly && sourceLike.length === 0) {
     return {
       decision: "request_changes",
       summary: `PR #${pr.id} only changes documentation/work notes, not implementation files.`,

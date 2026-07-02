@@ -1,4 +1,5 @@
 import { writeStateSnapshot, type AgentSignal, type OrvixBookEntry, type PullRequestReviewDecision } from "@orvix/core";
+import { isQwenConfigured, QwenClient } from "@orvix/qwen";
 import {
   appendEvent,
   broadcast,
@@ -8,7 +9,7 @@ import {
   stopScriptedTimers,
   type MissionRun
 } from "./run.js";
-import { agentName, markSignalRead, postBookEntry } from "./book.js";
+import { agentName, getBookContext, markSignalRead, postBookEntry } from "./book.js";
 import { executeAgentTask, getCompletedTaskIds, getExecutableTasks, getExecutedBranches } from "./agentRuntime.js";
 import { escalatePullRequestReview, getReviewAttemptCount, isNonBlockingReviewerPr, reviewPullRequest } from "./review.js";
 import { runRuntimeAcceptanceGate, shouldRunRuntimeAcceptance } from "./acceptance.js";
@@ -277,11 +278,13 @@ export async function handleAgentSignal(run: MissionRun, signal: AgentSignal) {
   }
 
   if (entry.type === "question") {
-    const answer = createSignalAnswer(run, signal.toAgentId, entry);
+    const answer = await createSignalAnswer(run, signal.toAgentId, entry);
     markSignalRead(run, { signalId: signal.id }, signal.toAgentId);
-    appendEvent(run, `${agentName(run, signal.toAgentId)} answered ${agentName(run, entry.fromAgentId)} in Orvix Book`, "success");
+    if (answer) {
+      appendEvent(run, `${agentName(run, signal.toAgentId)} answered ${agentName(run, entry.fromAgentId)} in Orvix Book`, "success");
+    }
     return {
-      ok: true,
+      ok: Boolean(answer),
       signal,
       answer
     };
@@ -296,17 +299,47 @@ export async function handleAgentSignal(run: MissionRun, signal: AgentSignal) {
   };
 }
 
-export function createSignalAnswer(run: MissionRun, agentId: string, question: OrvixBookEntry) {
+/**
+ * Answers a teammate's Orvix Book question as the receiving agent. In qwen
+ * mode the answer comes from Qwen with the agent's persona and context; if
+ * that fails the question stays open — Orvix does not fabricate answers.
+ * Mock mode keeps a deterministic answer for local demos.
+ */
+export async function createSignalAnswer(run: MissionRun, agentId: string, question: OrvixBookEntry) {
   const agent = run.state.agents.find((candidate) => candidate.id === agentId);
-  const topicText = question.topics.join(", ") || "the requested contract";
-  const ownedTask = run.state.tasks.find((task) => task.ownerAgentId === agentId);
-  const criteria = ownedTask?.acceptanceCriteria.slice(0, 3).join("; ") || "my acceptance contract";
-  const message = [
-    `${agent?.name ?? agentId} answer for ${topicText}: proceed with your current assumption.`,
-    `My owned workstream is ${ownedTask?.title ?? "my assigned task"}.`,
-    `Contract I will publish/maintain: ${criteria}.`,
-    "If your branch depends on my output, code against this contract now and I will reconcile details in my PR."
-  ].join(" ");
+  const ownedTask = run.state.tasks.find((task) => task.ownerAgentId === agentId) ?? null;
+
+  let message: string;
+  if (run.mode === "qwen" && isQwenConfigured()) {
+    try {
+      const answer = await new QwenClient().answerBookQuestionJson({
+        mission: run.mission,
+        agent: agent ?? { id: agentId, name: agentId, role: "specialist", currentActivity: "", status: "active", progress: 0, confidence: 0.7 },
+        ownedTask,
+        question,
+        bookContext: getBookContext(run, agentId, question.taskId)
+      });
+      message = answer.message?.trim() ?? "";
+      if (!message) throw new Error("empty_answer");
+    } catch (error) {
+      appendEvent(
+        run,
+        `${agent?.name ?? agentId} could not answer ${agentName(run, question.fromAgentId)} yet (${error instanceof Error ? error.message : "Qwen unavailable"}); the question stays open`,
+        "warning"
+      );
+      return null;
+    }
+  } else {
+    const topicText = question.topics.join(", ") || "the requested contract";
+    const criteria = ownedTask?.acceptanceCriteria.slice(0, 3).join("; ") || "my acceptance contract";
+    message = [
+      `${agent?.name ?? agentId} answer for ${topicText}: proceed with your current assumption.`,
+      `My owned workstream is ${ownedTask?.title ?? "my assigned task"}.`,
+      `Contract I will publish/maintain: ${criteria}.`,
+      "If your branch depends on my output, code against this contract now and I will reconcile details in my PR."
+    ].join(" ");
+  }
+
   return postBookEntry(run, {
     type: "answer",
     fromAgentId: agentId,
