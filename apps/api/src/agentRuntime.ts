@@ -32,6 +32,7 @@ import {
   mapWorkPacketForAgent,
   orvixMapContext,
   stopScriptedTimers,
+  workspaceOf,
   type MissionRun
 } from "./run.js";
 import { getBookContext, inferTopics, markSignalRead, normalizeBookEntryType, postBookEntry } from "./book.js";
@@ -49,17 +50,17 @@ export function executeGitTool(
 ) {
   switch (body.tool) {
     case "git_status":
-      return getGitStatus(run.workspace);
+      return getGitStatus(workspaceOf(run));
     case "create_branch":
-      return createGitBranch(run.workspace, body.branch ?? "", body.baseBranch ?? "main");
+      return createGitBranch(workspaceOf(run), body.branch ?? "", body.baseBranch ?? "main");
     case "checkout_branch":
-      return checkoutGitBranch(run.workspace, body.branch ?? "");
+      return checkoutGitBranch(workspaceOf(run), body.branch ?? "");
     case "commit_changes":
-      return commitWorkspaceChanges(run.workspace, body.message ?? "chore: agent workspace update");
+      return commitWorkspaceChanges(workspaceOf(run), body.message ?? "chore: agent workspace update");
     case "get_diff":
-      return getWorkspaceDiff(run.workspace, body.baseBranch ?? "main");
+      return getWorkspaceDiff(workspaceOf(run), body.baseBranch ?? "main");
     case "merge_branch":
-      return mergeWorkspaceBranch(run.workspace, body.branch ?? "", body.targetBranch ?? "main");
+      return mergeWorkspaceBranch(workspaceOf(run), body.branch ?? "", body.targetBranch ?? "main");
     default:
       return {
         ok: false as const,
@@ -959,7 +960,7 @@ export function createImplementationEvidenceCalls(
 }
 
 export function hasReviewableBranchEvidence(run: MissionRun, branch: string) {
-  const exists = branchExists(run.workspace, branch);
+  const exists = branchExists(workspaceOf(run), branch);
   if (!exists.ok) {
     return {
       ok: false,
@@ -976,7 +977,7 @@ export function hasReviewableBranchEvidence(run: MissionRun, branch: string) {
     };
   }
 
-  const diff = getBranchDiff(run.workspace, branch, "main");
+  const diff = getBranchDiff(workspaceOf(run), branch, "main");
   if (!diff.ok || diff.tool !== "get_diff") {
     return {
       ok: false,
@@ -993,7 +994,7 @@ export function hasReviewableBranchEvidence(run: MissionRun, branch: string) {
 }
 
 export function agentTaskWorkspace(run: MissionRun, agent: Agent, task: SimulationState["tasks"][number]) {
-  const worktree = ensureAgentWorktree(run.workspace, agent.id, task.branch, "main");
+  const worktree = ensureAgentWorktree(workspaceOf(run), agent.id, task.branch, "main");
   if ("ok" in worktree && !worktree.ok) {
     return worktree;
   }
@@ -1102,7 +1103,7 @@ export async function executeAgentToolCall(
   task: SimulationState["tasks"][number],
   toolCall: AgentToolCall,
   allowedTools: AgentToolName[],
-  workspace: Workspace = run.workspace
+  workspace: Workspace = workspaceOf(run)
 ) {
   if (!allowedTools.includes(toolCall.tool)) {
     return {

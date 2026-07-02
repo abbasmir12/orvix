@@ -27,6 +27,14 @@ export async function mapWithConcurrency<T, R>(
 }
 
 export async function runSchedulerTurn(run: MissionRun) {
+  if (!run.workspace) {
+    return {
+      ok: true,
+      kind: "planning_in_progress",
+      result: { reason: "Mission workspace is not created yet; planning pipeline is still running" }
+    };
+  }
+
   stopScriptedTimers(run);
   const executedBranches = getExecutedBranches(run);
   const combinedResults: unknown[] = [];

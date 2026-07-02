@@ -25,9 +25,11 @@ import {
   appendEvent,
   broadcast,
   orvixMapContext,
+  recordPlanningStage,
   runs,
   scheduleNextStep,
   scheduleOrchestratorStep,
+  workspaceOf,
   type MissionRun,
   type PlanningResearchResult
 } from "./run.js";
@@ -64,7 +66,7 @@ export function scaffoldContext(run: MissionRun) {
     }
   }
   return {
-    type: run.workspace.projectType ?? "generic",
+    type: run.workspace?.projectType ?? "generic",
     files: []
   };
 }
@@ -193,6 +195,8 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
   const planningResearch = planningResearchContext(run);
   let lockedOrvixMap: OrvixMap | null = null;
 
+  let stageStartedAt = Date.now();
+  recordPlanningStage(run, "analysis", "started");
   try {
     appendEvent(run, "MasterMind analysis started with Qwen using planning research", "info");
     const missionAnalysis = await client.analyzeMissionJson(run.mission, planningResearch);
@@ -222,6 +226,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       status: "final"
     });
     appendEvent(run, "Qwen MasterMind returned mission analysis", "success");
+    recordPlanningStage(run, "analysis", "completed", undefined, Date.now() - stageStartedAt);
   } catch (error) {
     addReasoningArtifact(run, {
       kind: "mission_analysis",
@@ -234,8 +239,11 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       })
     });
     appendEvent(run, "Qwen mission analysis failed; continuing with mock planner", "warning");
+    recordPlanningStage(run, "analysis", "degraded", error instanceof Error ? error.message : "Unknown Qwen error", Date.now() - stageStartedAt);
   }
 
+  stageStartedAt = Date.now();
+  recordPlanningStage(run, "orvix_map", "started");
   try {
     appendEvent(run, "Blueprint Architect started Orvix Map draft", "info");
     const mapInput = {
@@ -317,6 +325,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       status: "final"
     });
     appendEvent(run, "MasterMind locked Orvix Map for agents and reviewers", "success");
+    recordPlanningStage(run, "orvix_map", "completed", `Locked v${lockedOrvixMap.version}: ${lockedOrvixMap.surfaces.length} surfaces, ${lockedOrvixMap.agentWorkPackets.length} work packets`, Date.now() - stageStartedAt);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown Qwen error";
     lockedOrvixMap = createEmergencyOrvixMap(run, message);
@@ -336,8 +345,11 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       status: "final"
     });
     appendEvent(run, `Emergency Orvix Map locked after Blueprint Forge failure: ${message}`, "warning");
+    recordPlanningStage(run, "orvix_map", "degraded", `Emergency map locked: ${message}`, Date.now() - stageStartedAt);
   }
 
+  stageStartedAt = Date.now();
+  recordPlanningStage(run, "organization", "started");
   try {
     appendEvent(run, "Strategy Weaver organization design started with Qwen", "info");
     try {
@@ -365,6 +377,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
     });
     broadcast(run, "state", run.state);
     appendEvent(run, "Qwen Strategy Weaver returned organization design", "success");
+    recordPlanningStage(run, "organization", "completed", `${organizationDesign.agents.length} agents designed`, Date.now() - stageStartedAt);
   } catch (error) {
     addReasoningArtifact(run, {
       kind: "organization_design",
@@ -379,8 +392,11 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       })
     });
     appendEvent(run, `Qwen organization design failed; continuing with mock org: ${error instanceof Error ? error.message : "Unknown Qwen error"}`, "warning");
+    recordPlanningStage(run, "organization", "degraded", error instanceof Error ? error.message : "Unknown Qwen error", Date.now() - stageStartedAt);
   }
 
+  stageStartedAt = Date.now();
+  recordPlanningStage(run, "rubric", "started");
   try {
     appendEvent(run, "Critic Council rubric drafting started with Qwen", "info");
     const reviewRubric = await client.reviewPullRequestJson(run.state.pullRequests[1] ?? run.state.pullRequests[0]);
@@ -390,6 +406,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       content: JSON.stringify(reviewRubric)
     });
     appendEvent(run, "Qwen Critic Council prepared PR review rubric", "success");
+    recordPlanningStage(run, "rubric", "completed", undefined, Date.now() - stageStartedAt);
   } catch (error) {
     addReasoningArtifact(run, {
       kind: "review_rubric",
@@ -402,6 +419,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       })
     });
     appendEvent(run, "Qwen review rubric failed; continuing with scripted review", "warning");
+    recordPlanningStage(run, "rubric", "degraded", error instanceof Error ? error.message : "Unknown Qwen error", Date.now() - stageStartedAt);
   }
 
   addReasoningArtifact(run, {
@@ -517,20 +535,9 @@ export function normalizeScaffoldType(value: unknown): ProjectScaffoldType | und
   return allowed.includes(value as ProjectScaffoldType) ? value as ProjectScaffoldType : undefined;
 }
 
-export async function createRun(mission: string, mode: "mock" | "qwen") {
+export function createRun(mission: string, mode: "mock" | "qwen") {
   const initial = createInitialSimulation(mission);
-  const planningResearch = await draftInitialPlanningResearch(mission, mode, initial.analysis);
-  const planningCouncil = await draftInitialPlanningCouncil(mission, mode, initial.analysis, planningResearch);
-  const scaffoldDecision = await chooseInitialScaffold(mission, mode, initial.analysis, planningCouncil, planningResearch);
-  const scaffoldType = normalizeScaffoldType(scaffoldDecision?.scaffoldType);
   const store = createRunStore(initial.analysis.id, projectRoot);
-  const workspace = createMissionWorkspace({
-    missionId: initial.analysis.id,
-    mission,
-    mode,
-    root: workspaceRoot,
-    scaffoldType
-  });
   const run: MissionRun = {
     id: initial.analysis.id,
     mission,
@@ -539,7 +546,8 @@ export async function createRun(mission: string, mode: "mock" | "qwen") {
     stepIndex: 0,
     reasoningArtifacts: [],
     store,
-    workspace,
+    workspace: undefined,
+    planningStages: [],
     subscribers: new Set(),
     progressTimer: setInterval(() => {
       if (run.state.isComplete) {
@@ -569,6 +577,90 @@ export async function createRun(mission: string, mode: "mock" | "qwen") {
     status: "final",
     priority: "normal"
   });
+  writeStateSnapshot(store, run.state, run.reasoningArtifacts);
+  runs.set(run.id, run);
+
+  if (mode === "qwen" && isQwenConfigured()) {
+    void runPlanningPipeline(run).catch((error) => {
+      appendEvent(run, `Planning pipeline crashed: ${error instanceof Error ? error.message : "Unknown error"}`, "warning");
+    });
+    return run;
+  }
+
+  run.workspace = createMissionWorkspace({
+    missionId: run.id,
+    mission,
+    mode,
+    root: workspaceRoot
+  });
+  recordProjectBootstrap(run, null);
+  if (mode === "qwen") {
+    appendEvent(run, "Qwen reasoning skipped: DASHSCOPE_API_KEY is missing", "warning");
+    scheduleOrchestratorStep(run);
+  } else {
+    scheduleNextStep(run);
+  }
+  return run;
+}
+
+/**
+ * Background planning pipeline: research → council → scaffold/workspace →
+ * analysis → Orvix Map → organization → review rubric. POST /missions returns
+ * before this starts; every stage broadcasts an honest planning SSE event.
+ */
+async function runPlanningPipeline(run: MissionRun) {
+  appendEvent(run, "Mission accepted; Qwen planning pipeline is running in the background", "info");
+
+  let stageStartedAt = Date.now();
+  recordPlanningStage(run, "research", "started");
+  const planningResearch = await draftInitialPlanningResearch(run.mission, run.mode, run.state.analysis);
+  recordPlanningStage(
+    run,
+    "research",
+    planningResearch?.fallback ? "degraded" : "completed",
+    planningResearch?.fallback ? planningResearch.error ?? "Qwen research scout unavailable; fallback queries used" : undefined,
+    Date.now() - stageStartedAt
+  );
+  recordPlanningResearch(run, planningResearch);
+
+  stageStartedAt = Date.now();
+  recordPlanningStage(run, "council", "started");
+  const planningCouncil = await draftInitialPlanningCouncil(run.mission, run.mode, run.state.analysis, planningResearch);
+  recordPlanningStage(
+    run,
+    "council",
+    planningCouncil ? "completed" : "degraded",
+    planningCouncil ? undefined : "Qwen planning council unavailable; continuing without kickoff entries",
+    Date.now() - stageStartedAt
+  );
+  recordPlanningCouncil(run, planningCouncil);
+
+  stageStartedAt = Date.now();
+  recordPlanningStage(run, "scaffold", "started");
+  const scaffoldDecision = await chooseInitialScaffold(run.mission, run.mode, run.state.analysis, planningCouncil, planningResearch);
+  run.workspace = createMissionWorkspace({
+    missionId: run.id,
+    mission: run.mission,
+    mode: run.mode,
+    root: workspaceRoot,
+    scaffoldType: normalizeScaffoldType(scaffoldDecision?.scaffoldType)
+  });
+  recordProjectBootstrap(run, scaffoldDecision);
+  recordPlanningStage(
+    run,
+    "scaffold",
+    scaffoldDecision ? "completed" : "degraded",
+    scaffoldDecision
+      ? `${scaffoldDecision.label}: ${scaffoldDecision.rationale}`.slice(0, 300)
+      : "Qwen scaffold decision unavailable; MasterMind used local project detection",
+    Date.now() - stageStartedAt
+  );
+
+  writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+  await bootstrapQwenReasoning(run);
+}
+
+function recordPlanningResearch(run: MissionRun, planningResearch: PlanningResearchResult | null) {
   if (planningResearch) {
     addReasoningArtifact(run, {
       kind: "mission_analysis",
@@ -615,6 +707,9 @@ export async function createRun(mission: string, mode: "mock" | "qwen") {
       : "Planning Research Scout completed search-first planning research",
     planningResearch.fallback ? "warning" : "success");
   }
+}
+
+function recordPlanningCouncil(run: MissionRun, planningCouncil: QwenPlanningCouncilDraft | null) {
   if (planningCouncil) {
     addReasoningArtifact(run, {
       kind: "mission_analysis",
@@ -638,15 +733,6 @@ export async function createRun(mission: string, mode: "mock" | "qwen") {
     }
     appendEvent(run, "Planning council posted kickoff decisions to Orvix Book", "success");
   }
-  recordProjectBootstrap(run, scaffoldDecision);
-  writeStateSnapshot(store, run.state, run.reasoningArtifacts);
-  runs.set(run.id, run);
-  if (mode === "qwen") {
-    void bootstrapQwenReasoning(run);
-  } else {
-    scheduleNextStep(run);
-  }
-  return run;
 }
 
 export function scaffoldLabel(type: ProjectScaffoldType | undefined) {
@@ -669,12 +755,13 @@ export function scaffoldCommands(type: ProjectScaffoldType | undefined, decision
 }
 
 export function recordProjectBootstrap(run: MissionRun, decision?: QwenProjectScaffoldDecision | null) {
-  const filesResult = listWorkspaceFiles(run.workspace, { depth: 3 });
+  const workspace = workspaceOf(run);
+  const filesResult = listWorkspaceFiles(workspace, { depth: 3 });
   const files = filesResult.ok && filesResult.tool === "list_files"
     ? filesResult.files.map((file) => file.path).sort()
     : [];
-  const label = decision?.label || scaffoldLabel(run.workspace.projectType);
-  const commands = scaffoldCommands(run.workspace.projectType, decision);
+  const label = decision?.label || scaffoldLabel(workspace.projectType);
+  const commands = scaffoldCommands(workspace.projectType, decision);
   const rationale = decision?.rationale || `MasterMind selected ${label} using Orvix's local project detection because the user did not provide a more specific stack decision.`;
 
   postBookEntry(run, {
@@ -683,7 +770,7 @@ export function recordProjectBootstrap(run: MissionRun, decision?: QwenProjectSc
     message: `Project bootstrap complete: ${label}. Decision rationale: ${rationale} Specialist agents must build inside this runnable scaffold instead of inventing a new root layout. Suggested verification commands: ${commands.join(" → ")}.`,
     scope: "mission",
     visibility: "global",
-    topics: ["bootstrap", "scaffold", run.workspace.projectType ?? "generic"],
+    topics: ["bootstrap", "scaffold", workspace.projectType ?? "generic"],
     status: "final",
     priority: "high"
   });
@@ -723,7 +810,7 @@ export function recordProjectBootstrap(run: MissionRun, decision?: QwenProjectSc
         toolCalls: []
       },
       scaffold: {
-        type: run.workspace.projectType ?? "generic",
+        type: workspace.projectType ?? "generic",
         label,
         rationale,
         files,

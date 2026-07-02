@@ -28,6 +28,15 @@ export function notFound(response: ServerResponse) {
   sendJson(response, 404, { error: "not_found" });
 }
 
+function planningInProgress(response: ServerResponse, run: { id: string; planningStages: unknown[] }) {
+  sendJson(response, 409, {
+    error: "planning_in_progress",
+    message: "The mission workspace is not ready yet; planning is still running.",
+    missionId: run.id,
+    planningStages: run.planningStages
+  });
+}
+
 export async function readJson<T>(request: IncomingMessage): Promise<T> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -74,7 +83,7 @@ export const server = createServer(async (request, response) => {
       }
 
       const mode = body.mode === "qwen" ? "qwen" : "mock";
-      const run = await createRun(body.mission.trim(), mode);
+      const run = createRun(body.mission.trim(), mode);
       sendJson(response, 201, {
         missionId: run.id,
         eventsUrl: `/missions/${run.id}/events`,
@@ -95,9 +104,10 @@ export const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         summary: runSummary(run),
         state: run.state,
+        planningStages: run.planningStages,
         reasoningArtifacts: run.reasoningArtifacts,
         artifactsDir: run.store.artifactsDir,
-        workspace: run.workspace
+        workspace: run.workspace ?? null
       });
       return;
     }
@@ -107,6 +117,11 @@ export const server = createServer(async (request, response) => {
       const run = runs.get(workspaceMatch[1]);
       if (!run) {
         notFound(response);
+        return;
+      }
+
+      if (!run.workspace) {
+        planningInProgress(response, run);
         return;
       }
 
@@ -207,6 +222,11 @@ export const server = createServer(async (request, response) => {
         return;
       }
 
+      if (!run.workspace) {
+        planningInProgress(response, run);
+        return;
+      }
+
       const body = await readJson<{
         tool?: "git_status" | "create_branch" | "checkout_branch" | "commit_changes" | "get_diff" | "merge_branch";
         branch?: string;
@@ -234,6 +254,11 @@ export const server = createServer(async (request, response) => {
         return;
       }
 
+      if (!run.workspace) {
+        planningInProgress(response, run);
+        return;
+      }
+
       const result = await executeAgentTask(run, agentExecuteMatch[2]);
       sendJson(response, result.ok ? 200 : 400, result);
       return;
@@ -244,6 +269,11 @@ export const server = createServer(async (request, response) => {
       const run = runs.get(executeNextMatch[1]);
       if (!run) {
         notFound(response);
+        return;
+      }
+
+      if (!run.workspace) {
+        planningInProgress(response, run);
         return;
       }
 
@@ -260,6 +290,11 @@ export const server = createServer(async (request, response) => {
         return;
       }
 
+      if (!run.workspace) {
+        planningInProgress(response, run);
+        return;
+      }
+
       const result = await reviewNextPullRequest(run);
       sendJson(response, result.ok ? 200 : 400, result);
       return;
@@ -270,6 +305,11 @@ export const server = createServer(async (request, response) => {
       const run = runs.get(prReviewMatch[1]);
       if (!run) {
         notFound(response);
+        return;
+      }
+
+      if (!run.workspace) {
+        planningInProgress(response, run);
         return;
       }
 
@@ -286,6 +326,11 @@ export const server = createServer(async (request, response) => {
         return;
       }
 
+      if (!run.workspace) {
+        planningInProgress(response, run);
+        return;
+      }
+
       const result = await runSchedulerTurn(run);
       sendJson(response, result.ok ? 200 : 400, result);
       return;
@@ -296,6 +341,11 @@ export const server = createServer(async (request, response) => {
       const run = runs.get(autopilotMatch[1]);
       if (!run) {
         notFound(response);
+        return;
+      }
+
+      if (!run.workspace) {
+        planningInProgress(response, run);
         return;
       }
 
@@ -340,6 +390,7 @@ export const server = createServer(async (request, response) => {
 
       run.subscribers.add(response);
       writeSse(response, "state", run.state);
+      writeSse(response, "planning_snapshot", run.planningStages);
 
       request.on("close", () => {
         run.subscribers.delete(response);

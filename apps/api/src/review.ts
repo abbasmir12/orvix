@@ -22,6 +22,7 @@ import {
   broadcast,
   orvixMapContext,
   reviewAttemptLimit,
+  workspaceOf,
   type MissionRun
 } from "./run.js";
 import { createAgentSignal, postBookEntry } from "./book.js";
@@ -70,12 +71,12 @@ export function createStaticPrReviewDecision(
     };
   }
 
-  if (run.workspace.projectType === "react-vite") {
-    const packagePath = resolve(run.workspace.repoDir, "package.json");
+  if (workspaceOf(run).projectType === "react-vite") {
+    const packagePath = resolve(workspaceOf(run).repoDir, "package.json");
     const packageJson = existsSync(packagePath) ? readFileSync(packagePath, "utf8") : "";
     const buildUsesTsc = /"build"\s*:\s*"[^"]*\btsc\b/.test(packageJson);
     const jsSourceFiles = changedFiles.filter((file) => /^src\/.+\.jsx?$/.test(file));
-    const tsConfigExists = existsSync(resolve(run.workspace.repoDir, "tsconfig.json"));
+    const tsConfigExists = existsSync(resolve(workspaceOf(run).repoDir, "tsconfig.json"));
     if (buildUsesTsc && jsSourceFiles.length > 0 && !changedFiles.includes("package.json") && !tsConfigExists) {
       return {
         decision: "request_changes",
@@ -119,7 +120,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
     };
   }
 
-  const exists = branchExists(run.workspace, pr.branch);
+  const exists = branchExists(workspaceOf(run), pr.branch);
   if (!exists.ok || exists.tool !== "branch_exists" || !exists.exists) {
     const decision: PullRequestReviewDecision = {
       decision: "request_changes",
@@ -147,7 +148,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
     };
   }
 
-  const diff = getBranchDiff(run.workspace, pr.branch, "main");
+  const diff = getBranchDiff(workspaceOf(run), pr.branch, "main");
   if (!diff.ok) {
     appendEvent(run, `Critic Council could not diff ${pr.branch}: ${diff.error}`, "warning");
     return diff;
@@ -161,8 +162,8 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
 
   const ownerAgent = run.state.agents.find((agent) => agent.id === pr.ownerAgentId);
   const ownerTask = run.state.tasks.find((task) => task.branch === pr.branch && task.ownerAgentId === pr.ownerAgentId);
-  const reviewWorkspace = ownerAgent && ownerTask ? agentTaskWorkspace(run, ownerAgent, ownerTask) : run.workspace;
-  const files = "ok" in reviewWorkspace && !reviewWorkspace.ok ? listWorkspaceFiles(run.workspace) : listWorkspaceFiles(reviewWorkspace as Workspace);
+  const reviewWorkspace = ownerAgent && ownerTask ? agentTaskWorkspace(run, ownerAgent, ownerTask) : workspaceOf(run);
+  const files = "ok" in reviewWorkspace && !reviewWorkspace.ok ? listWorkspaceFiles(workspaceOf(run)) : listWorkspaceFiles(reviewWorkspace as Workspace);
   const staticDecision = createStaticPrReviewDecision(run, pr, diff.output, ownerTask);
   if (staticDecision) {
     updateReviewedPullRequest(run, pr, "Changes requested", "Requested changes", staticDecision);
@@ -191,7 +192,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
       pr,
       decision: staticDecision,
       approved: false,
-      git: getGitStatus(run.workspace)
+      git: getGitStatus(workspaceOf(run))
     };
   }
   const decision = run.mode === "qwen" && isQwenConfigured()
@@ -217,7 +218,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
 
   const approved = decision.decision === "approve";
   if (approved) {
-    const merge = mergeWorkspaceBranch(run.workspace, pr.branch, "main");
+    const merge = mergeWorkspaceBranch(workspaceOf(run), pr.branch, "main");
     if (!merge.ok) {
       const conflictDecision: PullRequestReviewDecision = {
         decision: "request_changes",
@@ -281,7 +282,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
     pr,
     decision,
     approved,
-    git: getGitStatus(run.workspace)
+    git: getGitStatus(workspaceOf(run))
   };
 }
 

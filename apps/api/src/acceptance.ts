@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { writeStateSnapshot } from "@orvix/core";
-import { addReasoningArtifact, appendEvent, broadcast, type MissionRun } from "./run.js";
+import { addReasoningArtifact, appendEvent, broadcast, workspaceOf, type MissionRun } from "./run.js";
 import { postBookEntry } from "./book.js";
 import { isNonBlockingReviewerPr } from "./review.js";
 
@@ -28,8 +28,8 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
   appendEvent(run, "Runtime QA started mission acceptance checks", "info");
   const checks: RuntimeAcceptanceResult["checks"] = [];
   const findings: string[] = [];
-  const projectType = run.workspace.projectType ?? "generic";
-  const repoDir = run.workspace.repoDir;
+  const projectType = workspaceOf(run).projectType ?? "generic";
+  const repoDir = workspaceOf(run).repoDir;
 
   if (projectType === "nextjs" || projectType === "react-vite" || projectType === "express-api" || projectType === "node-cli") {
     if (!existsSync(resolve(repoDir, "node_modules"))) {
@@ -135,7 +135,7 @@ export function runCommandCheck(cwd: string, name: string, args: string[], comma
 
 export function scanMissionPlaceholders(run: MissionRun) {
   const findings: string[] = [];
-  const files = collectFiles(run.workspace.repoDir, ["app", "src"], /\.(tsx|ts|jsx|js|css)$/);
+  const files = collectFiles(workspaceOf(run).repoDir, ["app", "src"], /\.(tsx|ts|jsx|js|css)$/);
   const placeholderPatterns = [
     /Runnable Next\.js starting point/i,
     /Orvix Project Scaffold/i,
@@ -148,7 +148,7 @@ export function scanMissionPlaceholders(run: MissionRun) {
   for (const file of files) {
     const content = readFileSync(file, "utf8");
     if (placeholderPatterns.some((pattern) => pattern.test(content))) {
-      findings.push(`${relativePath(run.workspace.repoDir, file)} still contains scaffold placeholder content.`);
+      findings.push(`${relativePath(workspaceOf(run).repoDir, file)} still contains scaffold placeholder content.`);
     }
   }
 
@@ -167,8 +167,8 @@ export function scanMissionPlaceholders(run: MissionRun) {
 export function scanMissionSpecificSourceIssues(run: MissionRun, files: string[]) {
   const findings: string[] = [];
   const mission = run.mission.toLowerCase();
-  const projectType = run.workspace.projectType ?? "generic";
-  const sourceByRelativePath = new Map(files.map((file) => [relativePath(run.workspace.repoDir, file), readFileSync(file, "utf8")]));
+  const projectType = workspaceOf(run).projectType ?? "generic";
+  const sourceByRelativePath = new Map(files.map((file) => [relativePath(workspaceOf(run).repoDir, file), readFileSync(file, "utf8")]));
   const combined = Array.from(sourceByRelativePath.values()).join("\n");
   const appSource = sourceByRelativePath.get("src/App.tsx") ?? sourceByRelativePath.get("app/page.tsx") ?? "";
 
@@ -210,10 +210,10 @@ export async function runWebPageSmokeChecks(run: MissionRun) {
   const checks: RuntimeAcceptanceResult["checks"] = [];
   const findings: string[] = [];
   const port = await findFreePort(3100);
-  const isNext = run.workspace.projectType === "nextjs";
+  const isNext = workspaceOf(run).projectType === "nextjs";
   const args = isNext ? ["run", "dev", "--", "-p", String(port)] : ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port)];
   const child = spawn("npm", args, {
-    cwd: run.workspace.repoDir,
+    cwd: workspaceOf(run).repoDir,
     stdio: ["ignore", "pipe", "pipe"]
   });
 

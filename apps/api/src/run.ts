@@ -16,6 +16,25 @@ import { normalizeOrvixMap, type OrvixMap, type QwenPlanningResearchRequest } fr
 import type { Workspace } from "@orvix/workspace";
 import { envPositiveInt } from "./envConfig.js";
 
+export type PlanningStageId =
+  | "research"
+  | "council"
+  | "scaffold"
+  | "analysis"
+  | "orvix_map"
+  | "organization"
+  | "rubric";
+
+export type PlanningStageStatus = "started" | "completed" | "degraded" | "failed";
+
+export type PlanningStageEvent = {
+  stage: PlanningStageId;
+  status: PlanningStageStatus;
+  detail?: string;
+  elapsedMs?: number;
+  at: string;
+};
+
 export type MissionRun = {
   id: string;
   mission: string;
@@ -25,7 +44,9 @@ export type MissionRun = {
   orchestratorTimer?: NodeJS.Timeout;
   reasoningArtifacts: ReasoningArtifact[];
   store: RunStore;
-  workspace: Workspace;
+  /** Created by the planning pipeline after the scaffold decision; absent while planning runs. */
+  workspace?: Workspace;
+  planningStages: PlanningStageEvent[];
   subscribers: Set<ServerResponse>;
   progressTimer: NodeJS.Timeout;
   stepTimer?: NodeJS.Timeout;
@@ -33,6 +54,55 @@ export type MissionRun = {
   autoAutopilotStarted?: boolean;
   qwenPlanningComplete?: boolean;
 };
+
+/** Workspace accessor for post-planning code paths; HTTP routes must 409 before reaching here. */
+export function workspaceOf(run: MissionRun): Workspace {
+  if (!run.workspace) {
+    throw new Error("workspace_not_ready: mission planning has not created the workspace yet");
+  }
+  return run.workspace;
+}
+
+export function recordPlanningStage(
+  run: MissionRun,
+  stage: PlanningStageId,
+  status: PlanningStageStatus,
+  detail?: string,
+  elapsedMs?: number
+) {
+  const event: PlanningStageEvent = {
+    stage,
+    status,
+    detail: detail?.slice(0, 400),
+    elapsedMs,
+    at: new Date().toISOString()
+  };
+  run.planningStages.push(event);
+  broadcast(run, "planning", event);
+  return event;
+}
+
+/** Runs a planning stage with timing and honest degraded/failed reporting. */
+export async function runPlanningStage<T>(
+  run: MissionRun,
+  stage: PlanningStageId,
+  work: () => Promise<T>,
+  options: { detail?: string; degradedDetail?: (error: unknown) => string } = {}
+): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  recordPlanningStage(run, stage, "started", options.detail);
+  const startedAt = Date.now();
+  try {
+    const value = await work();
+    recordPlanningStage(run, stage, "completed", undefined, Date.now() - startedAt);
+    return { ok: true, value };
+  } catch (error) {
+    const message = options.degradedDetail
+      ? options.degradedDetail(error)
+      : error instanceof Error ? error.message : "Unknown planning error";
+    recordPlanningStage(run, stage, "degraded", message, Date.now() - startedAt);
+    return { ok: false, error };
+  }
+}
 
 export type PlanningResearchResult = {
   request: QwenPlanningResearchRequest;
@@ -199,7 +269,8 @@ export function runSummary(run: MissionRun) {
     events: run.state.events.length,
     reasoningArtifacts: run.reasoningArtifacts.length,
     runDir: run.store.runDir,
-    workspaceDir: run.workspace.repoDir
+    workspaceDir: run.workspace?.repoDir ?? null,
+    planning: run.planningStages.at(-1) ?? null
   };
 }
 
