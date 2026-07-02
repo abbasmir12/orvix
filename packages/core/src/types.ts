@@ -135,6 +135,8 @@ export type AgentToolName =
 
 export type AgentToolCall = {
   tool: AgentToolName;
+  /** Native tool_call id from the model, used to route results back in multi-turn sessions. */
+  callId?: string;
   path?: string;
   content?: string;
   branch?: string;

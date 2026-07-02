@@ -129,11 +129,41 @@ export type QwenConfig = {
   apiKey: string;
   baseUrl: string;
   model: string;
+  plannerModel?: string;
+  agentModel?: string;
+  reviewModel?: string;
+  maxConcurrentRequests: number;
 };
 
+export type QwenRole = "planner" | "agent" | "review";
+
+export type QwenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+export type QwenUsageEvent = QwenUsage & {
+  model: string;
+  role: QwenRole;
+  durationMs: number;
+};
+
+type QwenUsageListener = (event: QwenUsageEvent) => void;
+
+let usageListener: QwenUsageListener | null = null;
+
+export function setQwenUsageListener(listener: QwenUsageListener | null) {
+  usageListener = listener;
+}
+
 export type ChatMessage = {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Raw OpenAI-shaped tool_calls array echoed back on assistant turns. */
+  tool_calls?: unknown[];
+  /** Links a tool-role result message to the assistant tool call it answers. */
+  tool_call_id?: string;
 };
 
 type QwenToolDefinition = {
@@ -154,6 +184,7 @@ export type QwenChatResult = {
   content: string;
   reasoningContent?: string;
   nativeToolCalls?: AgentToolCall[];
+  usage?: QwenUsage;
   message: Record<string, unknown>;
   raw: ChatCompletionResponse;
 };
@@ -276,6 +307,7 @@ function parseNativeToolCalls(message?: ChatCompletionMessage): AgentToolCall[] 
     }
     calls.push({
       tool: name,
+      callId: typeof toolCall.id === "string" ? toolCall.id : undefined,
       path: typeof args.path === "string" ? args.path : undefined,
       content: typeof args.content === "string" ? args.content : undefined,
       branch: typeof args.branch === "string" ? args.branch : undefined,
@@ -353,12 +385,46 @@ const ORVIX_PRODUCT_QUALITY_BAR = [
 ].join(" ");
 
 export function createQwenConfig(env: NodeJS.ProcessEnv = process.env): QwenConfig {
+  const concurrency = Number(env.QWEN_MAX_CONCURRENT_REQUESTS ?? "");
   return {
     apiKey: env.DASHSCOPE_API_KEY ?? "",
     baseUrl: env.QWEN_BASE_URL ?? "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-    model: env.QWEN_MODEL ?? "qwen-plus"
+    model: env.QWEN_MODEL ?? "qwen-plus",
+    plannerModel: env.QWEN_PLANNER_MODEL || undefined,
+    agentModel: env.QWEN_AGENT_MODEL || undefined,
+    reviewModel: env.QWEN_REVIEW_MODEL || undefined,
+    maxConcurrentRequests: Number.isFinite(concurrency) && concurrency >= 1 ? Math.floor(concurrency) : 6
   };
 }
+
+// One shared queue for the whole process so 20 parallel agents cannot
+// stampede the DashScope rate limits.
+const requestQueue: Array<() => void> = [];
+let activeRequests = 0;
+
+async function withRequestSlot<T>(limit: number, work: () => Promise<T>): Promise<T> {
+  if (activeRequests >= limit) {
+    await new Promise<void>((release) => requestQueue.push(release));
+  }
+  activeRequests += 1;
+  try {
+    return await work();
+  } finally {
+    activeRequests -= 1;
+    requestQueue.shift()?.();
+  }
+}
+
+function retryDelayMs(attempt: number, retryAfterHeader?: string | null) {
+  const retryAfter = Number(retryAfterHeader ?? "");
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(30000, retryAfter * 1000);
+  }
+  const base = 1500 * 2 ** attempt;
+  return base + Math.floor(Math.random() * 500);
+}
+
+const sleep = (ms: number) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 
 export function isQwenConfigured(config = createQwenConfig()) {
   return Boolean(config.apiKey);
@@ -399,93 +465,149 @@ export function parseQwenJson<T>(content: string): T {
   return JSON.parse(json) as T;
 }
 
+export type QwenChatOptions = {
+  temperature?: number;
+  thinking?: boolean;
+  nativeTools?: AgentToolName[];
+  requireNativeTool?: boolean;
+  timeoutMs?: number;
+  role?: QwenRole;
+  json?: boolean;
+};
+
+const maxRequestAttempts = 3;
+
 export class QwenClient {
   constructor(private readonly config = createQwenConfig()) {}
 
-  async chatDetailed(messages: ChatMessage[], options: { temperature?: number; thinking?: boolean; nativeTools?: AgentToolName[]; requireNativeTool?: boolean; timeoutMs?: number } = {}): Promise<QwenChatResult> {
+  private modelForRole(role: QwenRole = "planner") {
+    if (role === "agent") return this.config.agentModel ?? this.config.model;
+    if (role === "review") return this.config.reviewModel ?? this.config.model;
+    return this.config.plannerModel ?? this.config.model;
+  }
+
+  async chatDetailed(messages: ChatMessage[], options: QwenChatOptions = {}): Promise<QwenChatResult> {
     if (!this.config.apiKey) {
       throw new Error("DASHSCOPE_API_KEY is required for Qwen calls.");
     }
 
-    const controller = new AbortController();
-    const timeoutMs = options.timeoutMs ?? Number(process.env.QWEN_TIMEOUT_MS ?? defaultQwenTimeoutMs);
-    const timeout = setTimeout(() => controller.abort(), Math.max(5000, timeoutMs));
+    const timeoutMs = Math.max(5000, options.timeoutMs ?? Number(process.env.QWEN_TIMEOUT_MS ?? defaultQwenTimeoutMs));
     const thinkingEnabled = options.thinking === true && process.env.QWEN_ENABLE_THINKING === "true";
     const thinkingBudget = Number(process.env.QWEN_THINKING_BUDGET ?? "");
-    const requestBody: Record<string, unknown> = {
-      model: this.config.model,
-      messages,
-      temperature: options.temperature ?? 0.2
-    };
-    if (options.nativeTools?.length) {
-      requestBody.tools = createAgentToolDefinitions(options.nativeTools);
-      requestBody.tool_choice = options.requireNativeTool ? "required" : "auto";
-    }
-    if (thinkingEnabled) {
-      requestBody.enable_thinking = true;
-      if (Number.isFinite(thinkingBudget) && thinkingBudget > 0) {
-        requestBody.thinking_budget = thinkingBudget;
-      }
-    }
+    const role = options.role ?? "planner";
+    const model = this.modelForRole(role);
+    // response_format and tools are mutually exclusive on DashScope; native
+    // tool sessions rely on tool_calls, not JSON bodies.
+    let useJsonFormat = options.json === true && !options.nativeTools?.length;
 
-    let response: Response;
-    try {
-      response = await fetch(`${this.config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.config.apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
-    } catch (error) {
-      if (controller.signal.aborted) {
+    for (let attempt = 0; attempt < maxRequestAttempts; attempt += 1) {
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages,
+        temperature: options.temperature ?? 0.2
+      };
+      if (options.nativeTools?.length) {
+        requestBody.tools = createAgentToolDefinitions(options.nativeTools);
+        requestBody.tool_choice = options.requireNativeTool ? "required" : "auto";
+      }
+      if (useJsonFormat) {
+        requestBody.response_format = { type: "json_object" };
+      }
+      if (thinkingEnabled) {
+        requestBody.enable_thinking = true;
+        if (Number.isFinite(thinkingBudget) && thinkingBudget > 0) {
+          requestBody.thinking_budget = thinkingBudget;
+        }
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const startedAt = Date.now();
+      let response: Response;
+      try {
+        response = await withRequestSlot(this.config.maxConcurrentRequests, () =>
+          fetch(`${this.config.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${this.config.apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
+          })
+        );
+      } catch (error) {
+        clearTimeout(timeout);
+        if (controller.signal.aborted) {
+          if (thinkingEnabled) {
+            return this.chatDetailed(messages, { ...options, thinking: false });
+          }
+          throw new Error(`Qwen request timed out after ${timeoutMs}ms`);
+        }
+        if (attempt < maxRequestAttempts - 1) {
+          await sleep(retryDelayMs(attempt));
+          continue;
+        }
+        throw error;
+      }
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const body = await response.text();
+        const retryable = response.status === 429 || response.status >= 500;
+        if (retryable && attempt < maxRequestAttempts - 1) {
+          await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
+          continue;
+        }
+        if (response.status === 400 && useJsonFormat) {
+          useJsonFormat = false;
+          continue;
+        }
+        if (response.status === 400 && options.nativeTools?.length) {
+          return this.chatDetailed(messages, { ...options, nativeTools: undefined, requireNativeTool: undefined });
+        }
         if (thinkingEnabled) {
           return this.chatDetailed(messages, { ...options, thinking: false });
         }
-        throw new Error(`Qwen request timed out after ${Math.max(5000, timeoutMs)}ms`);
+        throw new Error(`Qwen request failed with ${response.status}: ${body.slice(0, 600)}`);
       }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
+
+      const payload = (await response.json()) as ChatCompletionResponse;
+      const message = payload.choices?.[0]?.message;
+      const content = message?.content ?? "";
+      const nativeToolCalls = parseNativeToolCalls(message);
+      if (!content && nativeToolCalls.length === 0) {
+        throw new Error("Qwen response did not include message content.");
+      }
+
+      const rawUsage = payload.usage && typeof payload.usage === "object" ? payload.usage as Record<string, unknown> : {};
+      const usage: QwenUsage = {
+        promptTokens: Number(rawUsage.prompt_tokens ?? 0),
+        completionTokens: Number(rawUsage.completion_tokens ?? 0),
+        totalTokens: Number(rawUsage.total_tokens ?? 0)
+      };
+      usageListener?.({ ...usage, model, role, durationMs: Date.now() - startedAt });
+
+      const reasoningContent = typeof message?.reasoning_content === "string"
+        ? message.reasoning_content
+        : typeof message?.reasoningContent === "string"
+          ? message.reasoningContent
+          : undefined;
+
+      return {
+        content,
+        reasoningContent,
+        nativeToolCalls,
+        usage,
+        message: message as Record<string, unknown>,
+        raw: payload
+      };
     }
 
-    if (!response.ok) {
-      const body = await response.text();
-      if (options.nativeTools?.length) {
-        return this.chatDetailed(messages, { ...options, nativeTools: undefined, requireNativeTool: undefined });
-      }
-      if (thinkingEnabled) {
-        return this.chatDetailed(messages, { ...options, thinking: false });
-      }
-      throw new Error(`Qwen request failed with ${response.status}: ${body}`);
-    }
-
-    const payload = (await response.json()) as ChatCompletionResponse;
-    const message = payload.choices?.[0]?.message;
-    const content = message?.content ?? "";
-    const nativeToolCalls = parseNativeToolCalls(message);
-    if (!content && nativeToolCalls.length === 0) {
-      throw new Error("Qwen response did not include message content.");
-    }
-
-    const reasoningContent = typeof message?.reasoning_content === "string"
-      ? message.reasoning_content
-      : typeof message?.reasoningContent === "string"
-        ? message.reasoningContent
-        : undefined;
-
-    return {
-      content,
-      reasoningContent,
-      nativeToolCalls,
-      message: message as Record<string, unknown>,
-      raw: payload
-    };
+    throw new Error("Qwen request failed after retries.");
   }
 
-  async chat(messages: ChatMessage[], options: { temperature?: number; thinking?: boolean; nativeTools?: AgentToolName[]; requireNativeTool?: boolean; timeoutMs?: number } = {}) {
+  async chat(messages: ChatMessage[], options: QwenChatOptions = {}) {
     const result = await this.chatDetailed(messages, options);
     return result.content;
   }
@@ -522,7 +644,7 @@ export class QwenClient {
           ]
         })
       }
-    ], { temperature: 0.1, thinking: true, timeoutMs: Number(process.env.QWEN_ORVIX_MAP_TIMEOUT_MS ?? 75000) });
+    ], { temperature: 0.1, thinking: true, json: true, role: "planner", timeoutMs: Number(process.env.QWEN_ORVIX_MAP_TIMEOUT_MS ?? 75000) });
   }
 
   async draftPlanningResearchJson(input: { mission: string; analysis?: unknown }) {
@@ -567,7 +689,7 @@ export class QwenClient {
           ]
         })
       }
-    ], { temperature: 0.1, thinking: true });
+    ], { temperature: 0.1, thinking: true, json: true, role: "planner" });
   }
 
   async analyzeMissionJson(mission: string, planningResearch?: unknown) {
@@ -621,7 +743,7 @@ export class QwenClient {
           ]
         })
       }
-    ], { temperature: 0.1, thinking: true });
+    ], { temperature: 0.1, thinking: true, json: true, role: "planner" });
   }
 
   async draftPlanningCouncilJson(input: { mission: string; analysis?: unknown; planningResearch?: unknown }) {
@@ -662,7 +784,7 @@ export class QwenClient {
           }
         })
       }
-    ], { temperature: 0.05, thinking: true });
+    ], { temperature: 0.05, thinking: true, json: true, role: "planner" });
   }
 
   async chooseProjectScaffoldJson(input: { mission: string; analysis?: unknown; planningCouncil?: unknown; planningResearch?: unknown }) {
@@ -794,7 +916,7 @@ export class QwenClient {
           ]
         })
       }
-    ], { temperature: 0.1, thinking: true });
+    ], { temperature: 0.1, thinking: true, json: true, role: "planner" });
   }
 
   async draftOrvixMapJson(input: {
@@ -855,7 +977,7 @@ export class QwenClient {
           }
         })
       }
-    ], { temperature: 0.06, thinking: false, timeoutMs: Number(process.env.QWEN_COMPACT_MAP_TIMEOUT_MS ?? 60000) });
+    ], { temperature: 0.06, thinking: false, json: true, role: "planner", timeoutMs: Number(process.env.QWEN_COMPACT_MAP_TIMEOUT_MS ?? 60000) });
   }
 
   async draftCompactOrvixMapJson(input: {
@@ -916,7 +1038,7 @@ export class QwenClient {
           ]
         })
       }
-    ], { temperature: 0.05, thinking: true, timeoutMs: Number(process.env.QWEN_MAP_REVIEW_TIMEOUT_MS ?? 60000) });
+    ], { temperature: 0.05, thinking: true, json: true, role: "planner", timeoutMs: Number(process.env.QWEN_MAP_REVIEW_TIMEOUT_MS ?? 60000) });
   }
 
   async reviewOrvixMapJson(input: {
@@ -959,7 +1081,7 @@ export class QwenClient {
         role: "user",
         content: JSON.stringify(input)
       }
-    ], { temperature: 0.08, thinking: true, timeoutMs: Number(process.env.QWEN_MAP_REVIEW_TIMEOUT_MS ?? 60000) });
+    ], { temperature: 0.08, thinking: true, json: true, role: "planner", timeoutMs: Number(process.env.QWEN_MAP_REVIEW_TIMEOUT_MS ?? 60000) });
   }
 
   async reviseOrvixMapJson(input: {
@@ -1024,7 +1146,7 @@ export class QwenClient {
           ]
         })
       }
-    ], { temperature: 0.1, thinking: true });
+    ], { temperature: 0.1, thinking: true, json: true, role: "planner" });
   }
 
   async designOrganizationJson(input: MissionAnalysis | { analysis: MissionAnalysis; planningCouncil?: unknown; planningResearch?: unknown; orvixMap?: unknown }) {
@@ -1042,7 +1164,7 @@ export class QwenClient {
         role: "user",
         content: `Review this PR and return JSON with status, decision, missingRequirements, risks, requestedChanges, approvalConditions.\n${JSON.stringify(pr, null, 2)}`
       }
-    ]);
+    ], { json: true, role: "review" });
   }
 
   async reviewPullRequestJson(pr: PullRequest) {
@@ -1059,7 +1181,7 @@ export class QwenClient {
         role: "user",
         content: `Create final report JSON with missionStatus, completedFeatures, openIssues, mergedPRs, releaseRecommendation, nextSteps.\n${JSON.stringify(input, null, 2)}`
       }
-    ]);
+    ], { json: true, role: "planner" });
   }
 
   async createFinalReportJson(input: { mission: string; organization: OrganizationNode; approvedPrs: PullRequest[] }) {
@@ -1189,7 +1311,7 @@ export class QwenClient {
           }
         })
       }
-    ], { temperature: 0.15 });
+    ], { temperature: 0.15, json: true, role: "agent" });
   }
 
   async planAgentExecutionJson(input: {
@@ -1344,7 +1466,7 @@ export class QwenClient {
           }
         })
       }
-    ], { temperature: 0.15, nativeTools: input.allowedTools, requireNativeTool: true });
+    ], { temperature: 0.15, role: "agent", nativeTools: input.allowedTools, requireNativeTool: true });
 
     return {
       plan: (() => {
@@ -1439,7 +1561,7 @@ export class QwenClient {
           }
         })
       }
-    ], { temperature: 0.1 });
+    ], { temperature: 0.1, json: true, role: "review" });
   }
 
   async reviewWorkspacePullRequestJson(input: {
