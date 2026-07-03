@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { progressBar, statusSymbol } from "../lib/progress.js";
-import { theme } from "../lib/theme.js";
+import { theme, glyphs } from "../lib/theme.js";
 import type { Agent, AgentCall, AgentCallStatus, AgentTurnEvent, PullRequest, ReasoningArtifact, RunMetricsSummary, SimulationState, TimelineEvent } from "../types.js";
 
 export type CockpitPanel = "focus" | "agents" | "activity" | "input";
@@ -65,16 +65,16 @@ const wrapText = (value: string, width: number) => {
 };
 
 const statusColor = (status: Agent["status"] | PullRequest["status"] | AgentCallStatus) => {
-  if (status === "completed" || status === "Approved" || status === "returned") return "green";
-  if (status === "blocked" || status === "Changes requested") return "yellow";
+  if (status === "completed" || status === "Approved" || status === "returned") return theme.success;
+  if (status === "blocked" || status === "Changes requested") return theme.warning;
   if (status === "active" || status === "In progress" || status === "calling" || status === "running") return theme.accent;
-  return "gray";
+  return theme.muted;
 };
 
 const eventColor = (severity: TimelineEvent["severity"]) => {
-  if (severity === "success") return "green";
-  if (severity === "warning") return "yellow";
-  return "gray";
+  if (severity === "success") return theme.success;
+  if (severity === "warning") return theme.warning;
+  return theme.muted;
 };
 
 type ActivityLine = {
@@ -89,7 +89,7 @@ function textLine(id: string, text: string, width: number, color?: string): Acti
   }));
 }
 
-function labeledLines(id: string, label: string, text: string, width: number, labelColor = "gray", textColor?: string): ActivityLine[] {
+function labeledLines(id: string, label: string, text: string, width: number, labelColor: string = theme.muted, textColor?: string): ActivityLine[] {
   const labelWidth = label.length;
   const wrapped = wrapText(text, Math.max(8, width - labelWidth));
   return wrapped.map((line, index) => ({
@@ -151,10 +151,10 @@ const callSymbol = (status: AgentCallStatus) => {
 function PanelTitle({ title, active }: { title: string; active: boolean }) {
   return (
     <Box justifyContent="space-between">
-      <Text color={active ? theme.accent : "gray"} bold>
+      <Text color={active ? theme.accent : theme.muted} bold>
         {title}
       </Text>
-      <Text color="gray">{active ? "selected" : ""}</Text>
+      <Text color={theme.muted}>{active ? "selected" : ""}</Text>
     </Box>
   );
 }
@@ -165,19 +165,28 @@ function TopStatus({ state, width, metrics }: { state: SimulationState; width: n
   const returned = state.agentCalls.filter((call) => call.status === "returned").length;
   const approved = state.pullRequests.filter((pr) => pr.status === "Approved").length;
 
-  const statusWidth = Math.max(24, width - 12);
   const status = `${state.analysis.id}  ${state.phase}  calls ${returned}/${state.agentCalls.length}  prs ${approved}/${state.pullRequests.length}  active ${active}  blocked ${blocked}`;
-  const metricsLine = metrics
-    ? `qwen calls ${metrics.qwenCalls}  tokens ${metrics.totalTokens.toLocaleString()}  files ${metrics.filesWritten}  ${Math.round(metrics.wallClockMs / 1000)}s`
-    : null;
+  const metricsText = metrics
+    ? `${metrics.qwenCalls} calls  ${metrics.totalTokens.toLocaleString()} tok  ${metrics.filesWritten} files  ${Math.round(metrics.wallClockMs / 1000)}s`
+    : "";
+  const statusWidth = Math.max(16, width - 12 - (metricsText ? metricsText.length + 2 : 0));
 
   return (
-    <Box width={width} borderStyle="single" borderColor={theme.accent} paddingX={1} marginBottom={1} justifyContent="space-between">
+    <Box width={width} borderStyle="round" borderColor={theme.accent} paddingX={1} marginBottom={1} justifyContent="space-between">
       <Box>
-        <Text color={theme.accent} bold>ORVIX</Text>
-        <Text color="gray">  {fit(status, statusWidth)}</Text>
+        <Text color={theme.accent} bold>{glyphs.ring} ORVIX</Text>
+        <Text color={theme.muted}>  {fit(status, statusWidth)}</Text>
       </Box>
-      {metricsLine ? <Text color="gray">{metricsLine}</Text> : null}
+      {metrics ? (
+        <Text>
+          <Text color={theme.cloud}>{metrics.qwenCalls} calls</Text>
+          <Text color={theme.muted}>  </Text>
+          <Text color={theme.accent}>{metrics.totalTokens.toLocaleString()} tok</Text>
+          <Text color={theme.muted}>  </Text>
+          <Text color={theme.success}>{metrics.filesWritten} files</Text>
+          <Text color={theme.muted}>  {Math.round(metrics.wallClockMs / 1000)}s</Text>
+        </Text>
+      ) : null}
     </Box>
   );
 }
@@ -206,29 +215,29 @@ function FocusPanel({
   const textWidth = Math.max(14, contentWidth - 1);
 
   return (
-    <Box width={width} flexDirection="column" borderStyle="single" borderColor={active ? theme.accent : "gray"} paddingX={1} paddingY={1}>
+    <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} paddingY={1}>
       <PanelTitle title="Focus" active={active} />
       <Box marginTop={1}>
         <Text color={statusColor(selectedAgent.status)}>{statusSymbol(selectedAgent.status)} </Text>
         <Text bold>{fit(selectedAgent.name, nameWidth)}</Text>
-        <Text color="gray">{selectedAgent.status}</Text>
+        <Text color={theme.muted}>{selectedAgent.status}</Text>
       </Box>
-      <Text color="gray">{fit(selectedAgent.role, textWidth)}</Text>
+      <Text color={theme.muted}>{fit(selectedAgent.role, textWidth)}</Text>
       <Box marginTop={1}>
-        <Text color="gray">Now: </Text>
+        <Text color={theme.muted}>Now: </Text>
         <Text>{fit(selectedAgent.currentActivity, Math.max(12, contentWidth - 6))}</Text>
       </Box>
       <Box>
-        <Text color="gray">{progressBar(selectedAgent.progress, 12)} </Text>
+        <Text color={theme.muted}>{progressBar(selectedAgent.progress, 12)} </Text>
         <Text>{selectedAgent.progress}%</Text>
       </Box>
       <Box marginTop={1}>
-        <Text color="gray">Org: </Text>
+        <Text color={theme.muted}>Org: </Text>
         <Text>{progressBar(progress, 10)} </Text>
         <Text>{progress}%</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
-        <Text color="gray">Work</Text>
+        <Text color={theme.muted}>Work</Text>
         <Text>{relatedPr ? fit(`#${relatedPr.id} ${relatedPr.branch} · ${relatedPr.status}`, textWidth) : "No PR owned yet"}</Text>
         <Text>{relatedCalls[0] ? fit(`${relatedCalls[0].from} → ${relatedCalls[0].to}`, textWidth) : "No delegation edge"}</Text>
       </Box>
@@ -252,13 +261,13 @@ function AgentsPanel({
   const activityWidth = Math.max(10, contentWidth - nameWidth - 5);
 
   return (
-    <Box width={width} flexDirection="column" borderStyle="single" borderColor={active ? theme.accent : "gray"} paddingX={1} paddingY={1}>
+    <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} paddingY={1}>
       <PanelTitle title="Agent Network" active={active} />
       <Box marginTop={1} flexDirection="column">
         {agents.map((agent, index) => (
           <Box key={agent.id}>
             <Box width={2}>
-              <Text color={index === selectedAgentIndex ? theme.accent : "gray"}>{index === selectedAgentIndex ? "›" : " "}</Text>
+              <Text color={index === selectedAgentIndex ? theme.accent : theme.muted}>{index === selectedAgentIndex ? "›" : " "}</Text>
             </Box>
             <Box width={2}>
               <Text color={statusColor(agent.status)}>{statusSymbol(agent.status)}</Text>
@@ -266,7 +275,7 @@ function AgentsPanel({
             <Box width={nameWidth}>
               <Text>{fit(agent.name, Math.max(1, nameWidth - 1))}</Text>
             </Box>
-            <Text color="gray">{fit(agent.currentActivity, activityWidth)}</Text>
+            <Text color={theme.muted}>{fit(agent.currentActivity, activityWidth)}</Text>
           </Box>
         ))}
       </Box>
@@ -315,16 +324,22 @@ function ActivityPanel({
   const lineWidth = Math.max(18, contentWidth - 2);
 
   return (
-    <Box width={width} flexDirection="column" borderStyle="single" borderColor={active ? theme.accent : "gray"} paddingX={1} paddingY={1} marginTop={1}>
+    <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} paddingY={1} marginTop={1}>
 	      <Box justifyContent="space-between">
 	        <Box>
-          {tabs.map((tab) => (
-            <Text key={tab} color={tab === activityTab ? theme.accent : "gray"}>
-              {tab === activityTab ? `[${tab}] ` : `${tab} `}
-            </Text>
+          {tabs.map((tab, index) => (
+            <Box key={tab} marginRight={index < tabs.length - 1 ? 1 : 0}>
+              <Text
+                backgroundColor={tab === activityTab ? theme.accent : undefined}
+                color={tab === activityTab ? "black" : theme.muted}
+                bold={tab === activityTab}
+              >
+                {` ${tab} `}
+              </Text>
+            </Box>
           ))}
 	        </Box>
-	        <Text color="gray">{active ? "↑/↓ scroll" : ""}</Text>
+	        <Text color={theme.muted}>{active ? "↑/↓ scroll" : ""}</Text>
 	      </Box>
 	      <Box marginTop={1} flexDirection="column" minHeight={rows}>
 	        {Array.from({ length: rows }).map((_, index) => {
@@ -335,15 +350,15 @@ function ActivityPanel({
 	                {line?.node ?? <Text> </Text>}
 	              </Box>
 	              <Box width={1}>
-	                <Text color={active ? theme.accent : "gray"}>{scrollbarGlyph(index, rows, windowed.total, windowed.start)}</Text>
+	                <Text color={active ? theme.accent : theme.muted}>{scrollbarGlyph(index, rows, windowed.total, windowed.start)}</Text>
 	              </Box>
 	            </Box>
 	          );
 	        })}
 	      </Box>
       <Box justifyContent="space-between">
-        <Text color="gray">{fit(position, 18)}</Text>
-        <Text color="gray">{windowed.maxOffset > 0 ? "PageUp/PageDown" : ""}</Text>
+        <Text color={theme.muted}>{fit(position, 18)}</Text>
+        <Text color={theme.muted}>{windowed.maxOffset > 0 ? "PageUp/PageDown" : ""}</Text>
       </Box>
     </Box>
   );
@@ -353,14 +368,14 @@ function agentTurnLines(turns: AgentTurnEvent[], width: number): ActivityLine[] 
   if (turns.length === 0) {
     return [{
       id: "turns-empty",
-      node: <Text color="gray">Waiting for agents to start working — live tool calls will stream here as they happen.</Text>
+      node: <Text color={theme.muted}>Waiting for agents to start working — live tool calls will stream here as they happen.</Text>
     }];
   }
 
   return turns.flatMap((turn) => {
     const time = turn.at.slice(11, 19);
     const label = `${time} ${turn.agentName} `;
-    const color = turn.ok === false ? "yellow" : turn.kind === "harness" ? "gray" : theme.accent;
+    const color = turn.ok === false ? theme.warning : turn.kind === "harness" ? theme.muted : theme.accent;
     const detail = turn.tool
       ? `${turn.tool}${turn.path ? ` ${turn.path}` : ""}${turn.detail ? ` — ${turn.detail}` : ""}`
       : turn.detail ?? (turn.kind === "note" ? "…thinking" : turn.kind);
@@ -370,7 +385,7 @@ function agentTurnLines(turns: AgentTurnEvent[], width: number): ActivityLine[] 
       detail,
       width,
       color,
-      turn.ok === false ? "yellow" : undefined
+      turn.ok === false ? theme.warning : undefined
     );
   });
 }
@@ -379,12 +394,12 @@ function signalsLines(events: TimelineEvent[], width: number): ActivityLine[] {
   if (events.length === 0) {
     return [{
       id: "signals-empty",
-      node: <Text color="gray">00:00  Waiting for MasterMind delegation.</Text>
+      node: <Text color={theme.muted}>00:00  Waiting for MasterMind delegation.</Text>
     }];
   }
 
   return events.flatMap((event) =>
-    labeledLines(event.id, `${event.time}  `, event.message, width, "gray", eventColor(event.severity))
+    labeledLines(event.id, `${event.time}  `, event.message, width, theme.muted, eventColor(event.severity))
   );
 }
 
@@ -402,7 +417,7 @@ function pullRequestLines(pullRequests: PullRequest[], width: number): ActivityL
       <Text>
           <Text color={statusColor(pr.status)}>{statusSymbol(pr.status)} </Text>
           <Text>{fit(`#${pr.id}`, 4)}</Text>
-          <Text color="gray">{fit(pr.branch, branchWidth)}</Text>
+          <Text color={theme.muted}>{fit(pr.branch, branchWidth)}</Text>
           <Text>{fit(pr.ownerName, ownerWidth)}</Text>
           <Text color={statusColor(pr.status)}>{pr.status}</Text>
       </Text>
@@ -412,16 +427,16 @@ function pullRequestLines(pullRequests: PullRequest[], width: number): ActivityL
   if (focused) {
     lines.push({
       id: `pr-${focused.id}-divider`,
-      node: <Text color="gray">{fit("─".repeat(Math.max(8, width)), width)}</Text>
+      node: <Text color={theme.muted}>{fit("─".repeat(Math.max(8, width)), width)}</Text>
     });
     lines.push(...labeledLines(`pr-${focused.id}-selected`, "Selected PR: ", `#${focused.id} ${focused.title}`, width));
-    lines.push(...labeledLines(`pr-${focused.id}-review`, "Review: ", `${focused.reviewerStatus} · ${focused.status}`, width, "gray", statusColor(focused.status)));
+    lines.push(...labeledLines(`pr-${focused.id}-review`, "Review: ", `${focused.reviewerStatus} · ${focused.status}`, width, theme.muted, statusColor(focused.status)));
     focused.comments.forEach((comment, index) => {
-      lines.push(...labeledLines(`pr-${focused.id}-comment-${index}`, "! ", comment, width, "yellow"));
+      lines.push(...labeledLines(`pr-${focused.id}-comment-${index}`, "! ", comment, width, theme.warning));
     });
   }
 
-  return lines.length > 0 ? lines : [{ id: "prs-empty", node: <Text color="gray">No PRs opened yet.</Text> }];
+  return lines.length > 0 ? lines : [{ id: "prs-empty", node: <Text color={theme.muted}>No PRs opened yet.</Text> }];
 }
 
 function decisionLines(state: SimulationState, width: number): ActivityLine[] {
@@ -449,8 +464,8 @@ function orvixBookLines(state: SimulationState, width: number): ActivityLine[] {
 
   if (entries.length === 0) {
     return [
-      { id: "book-empty-1", node: <Text color="gray">Orvix Book has no entries yet.</Text> },
-      { id: "book-empty-2", node: <Text color="gray">Agents will post questions, assumptions, contracts, and decisions here.</Text> }
+      { id: "book-empty-1", node: <Text color={theme.muted}>Orvix Book has no entries yet.</Text> },
+      { id: "book-empty-2", node: <Text color={theme.muted}>Agents will post questions, assumptions, contracts, and decisions here.</Text> }
     ];
   }
 
@@ -460,14 +475,14 @@ function orvixBookLines(state: SimulationState, width: number): ActivityLine[] {
       `${entry.type.padEnd(11, " ")}${entry.fromAgentId.padEnd(18, " ")}`,
       entry.message,
       width,
-      entry.type === "question" ? "yellow" : entry.type === "contract" || entry.type === "decision" ? "green" : theme.accent
+      entry.type === "question" ? theme.warning : entry.type === "contract" || entry.type === "decision" ? theme.success : theme.accent
     )
   );
 
   if (unread.length > 0) {
     lines.push({
       id: "book-unread",
-      node: <Text color="gray">{`Unread signals: ${unread.map((signal) => `${signal.toAgentId}:${signal.type}`).join(" · ")}`}</Text>
+      node: <Text color={theme.muted}>{`Unread signals: ${unread.map((signal) => `${signal.toAgentId}:${signal.type}`).join(" · ")}`}</Text>
     });
   }
 
@@ -553,9 +568,9 @@ function bootstrapBlockLines(bootstrap: BootstrapArtifact, width: number): Activ
   const files = stringArray(bootstrap.scaffold.files);
   const commands = stringArray(bootstrap.scaffold.commands);
   const lines: ActivityLine[] = [
-    transcriptLine(`${bootstrap.artifact.id}-bootstrap-say`, "think", `MasterMind selected ${label}. ${rationale}`, width, "white"),
+    transcriptLine(`${bootstrap.artifact.id}-bootstrap-say`, "think", `MasterMind selected ${label}. ${rationale}`, width, theme.text),
     toolPatchCallLine(`${bootstrap.artifact.id}-bootstrap-call`, "InitProject", type, width),
-    toolResultLine(`${bootstrap.artifact.id}-bootstrap-result`, `Created ${label} scaffold with ${files.length} files`, width, "green")
+    toolResultLine(`${bootstrap.artifact.id}-bootstrap-result`, `Created ${label} scaffold with ${files.length} files`, width, theme.success)
   ];
 
   files.slice(0, 18).forEach((file, index) => {
@@ -563,7 +578,7 @@ function bootstrapBlockLines(bootstrap: BootstrapArtifact, width: number): Activ
       id: `${bootstrap.artifact.id}-bootstrap-file-${index}`,
       node: (
         <Text>
-          <Text color="green">✓ </Text>
+          <Text color={theme.success}>✓ </Text>
           <Text>{fit(file, Math.max(12, width - 2))}</Text>
         </Text>
       )
@@ -585,8 +600,8 @@ function bootstrapBlockLines(bootstrap: BootstrapArtifact, width: number): Activ
 function reasoningLines(artifacts: ReasoningArtifact[], width: number): ActivityLine[] {
   if (artifacts.length === 0) {
     return [
-      { id: "reasoning-empty-1", node: <Text color="gray">Qwen reasoning artifacts will appear here in cloud mode.</Text> },
-      { id: "reasoning-empty-2", node: <Text color="gray">Expected: analysis, organization design, review rubric, final report.</Text> }
+      { id: "reasoning-empty-1", node: <Text color={theme.muted}>Qwen reasoning artifacts will appear here in cloud mode.</Text> },
+      { id: "reasoning-empty-2", node: <Text color={theme.muted}>Expected: analysis, organization design, review rubric, final report.</Text> }
     ];
   }
 
@@ -601,8 +616,8 @@ function reasoningLines(artifacts: ReasoningArtifact[], width: number): Activity
       `${artifact.status === "completed" ? "✓" : "!"} ${artifactLabel(artifact.kind).padEnd(23, " ")}`,
       artifact.artifactPath ?? summarizeArtifact(artifact),
       width,
-      artifact.status === "completed" ? "green" : "yellow",
-      "gray"
+      artifact.status === "completed" ? theme.success : theme.warning,
+      theme.muted
     );
   });
 }
@@ -933,8 +948,8 @@ function toolPatchCallLine(id: string, tool: string, target: string, width: numb
       <Box flexDirection="column">
         {wrapped.map((line, index) => (
           <Text key={`${id}-${index}`}>
-            {index === 0 ? <Text color="green">● </Text> : <Text>  </Text>}
-            <Text color="green" bold>{line}</Text>
+            {index === 0 ? <Text color={theme.success}>● </Text> : <Text>  </Text>}
+            <Text color={theme.success} bold>{line}</Text>
           </Text>
         ))}
       </Box>
@@ -947,15 +962,15 @@ function CodePatchLine({ row, width }: { row: CodePatchRow; width: number }) {
   const prefix = row.kind === "add" ? "+" : row.kind === "remove" ? "-" : " ";
   const codeWidth = Math.max(8, width - 8);
   const wrapped = wrapText(row.text, codeWidth);
-  const backgroundColor = row.kind === "add" ? "green" : row.kind === "remove" ? "red" : undefined;
-  const foregroundColor = row.kind === "context" ? "gray" : "white";
+  const backgroundColor = row.kind === "add" ? theme.success : row.kind === "remove" ? theme.danger : undefined;
+  const foregroundColor = row.kind === "context" ? theme.muted : theme.text;
 
   return (
     <Box flexDirection="column">
       {wrapped.map((line, index) => (
         <Text key={`${row.id}-${index}`}>
-          <Text color="gray">{index === 0 ? numberText : "    "} </Text>
-          <Text color={row.kind === "add" ? "green" : row.kind === "remove" ? "red" : "gray"}>
+          <Text color={theme.muted}>{index === 0 ? numberText : "    "} </Text>
+          <Text color={row.kind === "add" ? theme.success : row.kind === "remove" ? theme.danger : theme.muted}>
             {index === 0 ? prefix : " "}
           </Text>
           <Text> </Text>
@@ -999,10 +1014,16 @@ function spacerLine(id: string): ActivityLine {
 function InspectorTabs({ selected }: { selected: InspectorTab }) {
   return (
     <Box marginTop={1}>
-      {inspectorTabs.map((tab) => (
-        <Text key={tab} color={tab === selected ? theme.accent : "gray"}>
-          {tab === selected ? `[${tab}] ` : `${tab} `}
-        </Text>
+      {inspectorTabs.map((tab, index) => (
+        <Box key={tab} marginRight={index < inspectorTabs.length - 1 ? 1 : 0}>
+          <Text
+            backgroundColor={tab === selected ? theme.accent : undefined}
+            color={tab === selected ? "black" : theme.muted}
+            bold={tab === selected}
+          >
+            {` ${tab} `}
+          </Text>
+        </Box>
       ))}
     </Box>
   );
@@ -1024,14 +1045,14 @@ function DossierPanel({
   scrollOffset: number;
 }) {
   const contentWidth = Math.max(24, width - 5);
-  const windowed = bottomWindow(lines.length > 0 ? lines : [{ id: "empty", node: <Text color="gray">No evidence captured yet.</Text> }], rows, scrollOffset);
+  const windowed = bottomWindow(lines.length > 0 ? lines : [{ id: "empty", node: <Text color={theme.muted}>No evidence captured yet.</Text> }], rows, scrollOffset);
   const position = `${windowed.start + 1}-${Math.min(windowed.start + rows, windowed.total)}/${windowed.total}`;
 
   return (
-    <Box marginTop={1} borderStyle="single" borderColor="gray" paddingX={1} paddingY={1} flexDirection="column">
+    <Box marginTop={1} borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1} flexDirection="column">
       <Box justifyContent="space-between">
         <Text color={theme.accent} bold>{title}</Text>
-        <Text color="gray">{fit(`${meta} · ${position}`, Math.max(18, width - title.length - 8))}</Text>
+        <Text color={theme.muted}>{fit(`${meta} · ${position}`, Math.max(18, width - title.length - 8))}</Text>
       </Box>
       <Box marginTop={1} flexDirection="column">
         {Array.from({ length: rows }).map((_, index) => {
@@ -1052,7 +1073,7 @@ function DossierPanel({
 
 function transcriptLine(id: string, badge: string, text: string, width: number, color: string = theme.accent): ActivityLine {
   const isSpeech = badge === "say" || badge === "think" || badge === "agent" || badge === "goal" || badge === "check";
-  const markerColor = isSpeech ? "white" : color;
+  const markerColor = isSpeech ? theme.text : color;
   const label = isSpeech ? "" : `${badge} `;
   const prefixWidth = 2 + label.length;
   const wrapped = wrapText(text, Math.max(12, width - prefixWidth));
@@ -1078,7 +1099,7 @@ function transcriptLine(id: string, badge: string, text: string, width: number, 
   };
 }
 
-function toolResultLine(id: string, text: string, width: number, color = "gray"): ActivityLine {
+function toolResultLine(id: string, text: string, width: number, color: string = theme.muted): ActivityLine {
   const wrapped = wrapText(text, Math.max(12, width - 4));
   return {
     id,
@@ -1086,7 +1107,7 @@ function toolResultLine(id: string, text: string, width: number, color = "gray")
       <Box flexDirection="column">
         {wrapped.map((line, index) => (
           <Text key={`${id}-${index}`}>
-            <Text color="gray">{index === 0 ? "  └ " : "    "}</Text>
+            <Text color={theme.muted}>{index === 0 ? "  └ " : "    "}</Text>
             <Text color={color}>{line}</Text>
           </Text>
         ))}
@@ -1120,9 +1141,9 @@ type TranscriptEvent = ReturnType<typeof executionTranscriptEvents>[number];
 
 function transcriptColor(event: TranscriptEvent) {
   if (event.type === "decision") return "cyan";
-  if (event.type === "handoff") return "yellow";
-  if (event.type === "review_note") return "green";
-  return "white";
+  if (event.type === "handoff") return theme.warning;
+  if (event.type === "review_note") return theme.success;
+  return theme.text;
 }
 
 function transcriptBadge(event: TranscriptEvent) {
@@ -1187,7 +1208,7 @@ function toolConversationLines(executions: ParsedExecution[], width: number, opt
   return results.flatMap((result, index) => {
     const transcriptPreface = (transcriptBuckets[index] ?? []).map((event) => transcriptEventLine(event, width));
     const fallbackPreface = transcriptPreface.length === 0 && fallbackReasoning[fallbackIndex]
-      ? [transcriptLine(`tool-reasoning-${index}`, "think", fallbackReasoning[fallbackIndex++], width, "white")]
+      ? [transcriptLine(`tool-reasoning-${index}`, "think", fallbackReasoning[fallbackIndex++], width, theme.text)]
       : [];
     const preface = transcriptPreface.length > 0 ? transcriptPreface : fallbackPreface;
     const resultDetails = resultTool(result);
@@ -1215,8 +1236,8 @@ function toolConversationLines(executions: ParsedExecution[], width: number, opt
     const tool = formatToolCall(result);
     return [
       ...preface,
-      transcriptLine(`tool-call-${index}`, tool.ok ? "tool" : "error", tool.call, width, tool.ok ? "green" : "red"),
-      toolResultLine(`tool-result-${index}`, tool.result, width, tool.ok ? "gray" : "red"),
+      transcriptLine(`tool-call-${index}`, tool.ok ? "tool" : "error", tool.call, width, tool.ok ? theme.success : theme.danger),
+      toolResultLine(`tool-result-${index}`, tool.result, width, tool.ok ? theme.muted : theme.danger),
       spacerLine(`tool-result-${index}-spacer`)
     ];
   });
@@ -1276,7 +1297,7 @@ function AgentInspector({
   const toolConversation = toolConversationLines(executions, widePaneWidth, { fullWriteDiffs: true });
   const bookTranscript = bookEntries.slice(-4).flatMap((entry, index) => [
     ...(index > 0 ? [spacerLine(`overview-book-spacer-${index}`)] : []),
-    transcriptLine(`book-${entry.id}`, entry.type, entry.message, widePaneWidth, entry.type === "question" ? "yellow" : "cyan")
+    transcriptLine(`book-${entry.id}`, entry.type, entry.message, widePaneWidth, entry.type === "question" ? theme.warning : "cyan")
   ]);
 	  const overviewLines: ActivityLine[] = [
 	    transcriptLine("agent-role", "agent", `${agent.name} owns ${agent.role}.`, widePaneWidth, theme.accent),
@@ -1284,16 +1305,16 @@ function AgentInspector({
 	    ...bootstrapLines,
 	    ...(bootstrapLines.length > 0 ? [spacerLine("overview-after-bootstrap")] : []),
 	    transcriptLine("goal", "goal", reasoning[0] ?? agent.currentActivity, widePaneWidth, "cyan"),
-	    transcriptLine("acceptance", "check", reasoning[1] ?? "Acceptance criteria generated by mission plan.", widePaneWidth, "green"),
+	    transcriptLine("acceptance", "check", reasoning[1] ?? "Acceptance criteria generated by mission plan.", widePaneWidth, theme.success),
 	    transcriptLine("branch", "branch", primaryTask?.branch ?? "No branch assigned yet.", widePaneWidth, "blue"),
-	    transcriptLine("pr", "pr", primaryPr ? `PR #${primaryPr.id} is ${primaryPr.status}.` : "No PR opened yet.", widePaneWidth, primaryPr?.status === "Approved" ? "green" : "yellow"),
+	    transcriptLine("pr", "pr", primaryPr ? `PR #${primaryPr.id} is ${primaryPr.status}.` : "No PR opened yet.", widePaneWidth, primaryPr?.status === "Approved" ? theme.success : theme.warning),
 	    toolResultLine("files", `${files.length} file write operation${files.length === 1 ? "" : "s"} captured.`, widePaneWidth),
 	    spacerLine("overview-before-tools"),
 	    ...toolConversation,
 	    spacerLine("overview-after-tools"),
 	    ...bookTranscript,
 	    spacerLine("overview-after-book"),
-	    transcriptLine("review", "review", String(reviewDecision?.summary ?? primaryPr?.summary ?? "Reviewer has not posted a decision yet."), widePaneWidth, primaryPr?.status === "Approved" ? "green" : "yellow")
+	    transcriptLine("review", "review", String(reviewDecision?.summary ?? primaryPr?.summary ?? "Reviewer has not posted a decision yet."), widePaneWidth, primaryPr?.status === "Approved" ? theme.success : theme.warning)
 	  ];
 	  const traceLines = [
 	    ...bootstrapLines,
@@ -1305,16 +1326,16 @@ function AgentInspector({
         ...(index > 0 ? [spacerLine(`file-spacer-${index}`)] : []),
         ...patchBlockLines(block, widePaneWidth, 0)
       ])
-    : [transcriptLine("files-empty", "file", "No file writes captured yet.", widePaneWidth, "gray")];
+    : [transcriptLine("files-empty", "file", "No file writes captured yet.", widePaneWidth, theme.muted)];
   const bookLines = bookEntries.flatMap((entry, index) => [
     ...(index > 0 ? [spacerLine(`book-spacer-${index}`)] : []),
-    transcriptLine(`book-${entry.id}`, entry.type, `${entry.fromAgentId}: ${entry.message}`, widePaneWidth, entry.type === "question" ? "yellow" : entry.type === "answer" ? "green" : "cyan")
+    transcriptLine(`book-${entry.id}`, entry.type, `${entry.fromAgentId}: ${entry.message}`, widePaneWidth, entry.type === "question" ? theme.warning : entry.type === "answer" ? theme.success : "cyan")
   ]);
   const reviewLines: ActivityLine[] = [
-    transcriptLine("review-pr", "pr", primaryPr ? `#${primaryPr.id} ${primaryPr.branch} · ${primaryPr.status}` : "No PR opened yet.", widePaneWidth, primaryPr?.status === "Approved" ? "green" : "yellow"),
-    transcriptLine("review-summary", "review", String(reviewDecision?.summary ?? primaryPr?.summary ?? "No review yet"), widePaneWidth, primaryPr?.status === "Approved" ? "green" : "yellow"),
-    ...stringArray(reviewDecision?.comments).map((comment, index) => transcriptLine(`comment-${index}`, "ok", comment, widePaneWidth, "green")),
-    ...stringArray(reviewDecision?.risks).map((risk, index) => transcriptLine(`risk-${index}`, "risk", risk, widePaneWidth, "yellow"))
+    transcriptLine("review-pr", "pr", primaryPr ? `#${primaryPr.id} ${primaryPr.branch} · ${primaryPr.status}` : "No PR opened yet.", widePaneWidth, primaryPr?.status === "Approved" ? theme.success : theme.warning),
+    transcriptLine("review-summary", "review", String(reviewDecision?.summary ?? primaryPr?.summary ?? "No review yet"), widePaneWidth, primaryPr?.status === "Approved" ? theme.success : theme.warning),
+    ...stringArray(reviewDecision?.comments).map((comment, index) => transcriptLine(`comment-${index}`, "ok", comment, widePaneWidth, theme.success)),
+    ...stringArray(reviewDecision?.risks).map((risk, index) => transcriptLine(`risk-${index}`, "risk", risk, widePaneWidth, theme.warning))
   ];
   const tabLines = inspectorTab === "overview" ? overviewLines :
     inspectorTab === "trace" ? traceLines :
@@ -1330,16 +1351,16 @@ function AgentInspector({
   return (
     <Box flexDirection="column">
       <TopStatus state={state} width={width} />
-      <Box borderStyle="single" borderColor={theme.accent} paddingX={1} paddingY={1} flexDirection="column">
+      <Box borderStyle="round" borderColor={theme.accent} paddingX={1} paddingY={1} flexDirection="column">
         <Box justifyContent="space-between">
           <Text color={theme.accent} bold>{fit(agent.name, Math.max(18, contentWidth - 28))}</Text>
-          <Text color="gray">agent {agentIndex + 1}/{state.agents.length}</Text>
+          <Text color={theme.muted}>agent {agentIndex + 1}/{state.agents.length}</Text>
         </Box>
-        <Text color="gray">{fit(agent.role, contentWidth)}</Text>
+        <Text color={theme.muted}>{fit(agent.role, contentWidth)}</Text>
         <Box marginTop={1}>
           <Text color={statusColor(agent.status)}>{statusSymbol(agent.status)} </Text>
           <Text>{agent.status}</Text>
-          <Text color="gray">  {progressBar(agent.progress, 14)} {agent.progress}%</Text>
+          <Text color={theme.muted}>  {progressBar(agent.progress, 14)} {agent.progress}%</Text>
         </Box>
         <InspectorTabs selected={inspectorTab} />
       </Box>
@@ -1353,9 +1374,9 @@ function AgentInspector({
         scrollOffset={inspectorScrollOffset}
       />
 
-      <Box borderStyle="single" borderColor="gray" paddingX={1} marginTop={1}>
+      <Box borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={1}>
         <Text color={theme.accent}>› </Text>
-        <Text color="gray">{fit("1-5 tabs · ←/→ tabs · ↑/↓ scroll · n/p agents · h/esc/0 home · q quit", Math.max(24, width - 6))}</Text>
+        <Text color={theme.muted}>{fit("1-5 tabs · ←/→ tabs · ↑/↓ scroll · n/p agents · h/esc/0 home · q quit", Math.max(24, width - 6))}</Text>
       </Box>
     </Box>
   );
@@ -1365,7 +1386,7 @@ function MenuScreen({ state, width, mode }: { state: SimulationState; width: num
   return (
     <Box flexDirection="column">
       <TopStatus state={state} width={width} />
-      <Box borderStyle="single" borderColor={theme.accent} paddingX={1} paddingY={1} flexDirection="column">
+      <Box borderStyle="round" borderColor={theme.accent} paddingX={1} paddingY={1} flexDirection="column">
         <Text color={theme.accent} bold>Orvix Menu</Text>
         <Box marginTop={1} flexDirection="column">
           <Text><Text color={theme.accent}>0 </Text>Home cockpit</Text>
@@ -1383,12 +1404,12 @@ function MenuScreen({ state, width, mode }: { state: SimulationState; width: num
           <Text><Text color={theme.accent}>q </Text>Quit</Text>
         </Box>
         <Box marginTop={1}>
-          <Text color="gray">{fit("Current workflow: Qwen designs the org, Orvix creates tasks/PRs, the orchestrator coordinates review and final approval.", Math.max(30, width - 4))}</Text>
+          <Text color={theme.muted}>{fit("Current workflow: Qwen designs the org, Orvix creates tasks/PRs, the orchestrator coordinates review and final approval.", Math.max(30, width - 4))}</Text>
         </Box>
       </Box>
-      <Box borderStyle="single" borderColor="gray" paddingX={1} marginTop={1}>
+      <Box borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={1}>
         <Text color={theme.accent}>› </Text>
-        <Text color="gray">m/0/esc close menu</Text>
+        <Text color={theme.muted}>m/0/esc close menu</Text>
       </Box>
     </Box>
   );
@@ -1415,15 +1436,17 @@ function CommandBar({
     ? `a autopilot · x execute next · r run selected · v review PR · ${executionStatus}`
     : executionStatus;
 
+  const isLive = mode === "cloud" && Boolean(missionId);
+
   return (
-    <Box width={width} borderStyle="single" borderColor={active ? theme.accent : "gray"} paddingX={1} marginTop={1} flexDirection="column">
+    <Box width={width} borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} marginTop={1} flexDirection="column">
 	      <Text>
-	        <Text color={theme.accent}>› </Text>
-	        <Text color="gray">{fit(`Tab switch · ↑/↓ ${activePanel === "activity" || expandedPanel === "activity" ? "scroll" : "agents"} · wheel activity · Enter inspect · 0 home · m menu · 1-6 tabs (1 live turns) · e ${expandedPanel ? "restore" : "expand"} · q quit`, Math.max(24, width - 6))}</Text>
+	        <Text color={theme.accent}>{glyphs.chevron} </Text>
+	        <Text color={theme.muted}>{fit(`Tab switch · ↑/↓ ${activePanel === "activity" || expandedPanel === "activity" ? "scroll" : "agents"} · wheel activity · Enter inspect · 0 home · m menu · 1-6 tabs (1 live turns) · e ${expandedPanel ? "restore" : "expand"} · q quit`, Math.max(24, width - 6))}</Text>
 	      </Text>
       <Text>
-        <Text color={mode === "cloud" && missionId ? theme.accent : "gray"}>→ </Text>
-        <Text color="gray">{fit(executionHint, Math.max(24, width - 6))}</Text>
+        <Text color={isLive ? theme.cloud : theme.muted}>{glyphs.arrow} </Text>
+        <Text color={isLive ? theme.cloud : theme.muted}>{fit(executionHint, Math.max(24, width - 6))}</Text>
       </Text>
     </Box>
   );

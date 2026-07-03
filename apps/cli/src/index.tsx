@@ -9,20 +9,21 @@ type RunMode = "mock" | "cloud";
 
 function Root({
   initialMission,
-  mode,
+  initialMode,
   apiUrl
 }: {
   initialMission?: string;
-  mode: RunMode;
+  initialMode: RunMode;
   apiUrl?: string;
 }) {
   const [mission, setMission] = useState(initialMission ?? "");
+  const [mode, setMode] = useState<RunMode>(initialMode);
 
   if (mission) {
     return <App mission={mission} mode={mode} apiUrl={apiUrl} />;
   }
 
-  return <LaunchPrompt onSubmit={setMission} />;
+  return <LaunchPrompt mode={mode} onModeChange={setMode} apiUrl={apiUrl ?? "http://localhost:8787"} onSubmit={setMission} />;
 }
 
 async function runMission(missionParts: string[] = [], options: { mode?: RunMode; apiUrl?: string } = {}) {
@@ -30,7 +31,7 @@ async function runMission(missionParts: string[] = [], options: { mode?: RunMode
   const instance = render(
     <Root
       initialMission={mission || undefined}
-      mode={options.mode ?? "mock"}
+      initialMode={options.mode ?? "mock"}
       apiUrl={options.apiUrl}
     />
   );

@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { progressBar } from "../lib/progress.js";
-import { theme } from "../lib/theme.js";
+import { theme, glyphs } from "../lib/theme.js";
 import type { PlanningStageEvent, PlanningStageId, ReasoningArtifact, SimulationState } from "../types.js";
 
 type PlanningConsoleProps = {
@@ -33,18 +33,18 @@ function latestStage(stages: PlanningStageEvent[], stage: PlanningStageId) {
 }
 
 function stageGlyph(status?: PlanningStageEvent["status"]) {
-  if (status === "completed") return "✓";
-  if (status === "degraded") return "!";
-  if (status === "failed") return "✗";
-  if (status === "started") return "◐";
-  return "○";
+  if (status === "completed") return glyphs.done;
+  if (status === "degraded") return glyphs.degraded;
+  if (status === "failed") return glyphs.blocked;
+  if (status === "started") return glyphs.active;
+  return glyphs.queued;
 }
 
 function stageGlyphColor(status?: PlanningStageEvent["status"]) {
-  if (status === "completed") return "green";
-  if (status === "degraded" || status === "failed") return "yellow";
+  if (status === "completed") return theme.success;
+  if (status === "degraded" || status === "failed") return theme.warning;
   if (status === "started") return theme.accent;
-  return "gray";
+  return theme.muted;
 }
 
 function formatElapsed(elapsedMs?: number) {
@@ -108,15 +108,15 @@ function artifactStatus(kind: ReasoningArtifact["kind"], artifacts: ReasoningArt
 }
 
 function statusGlyph(status: "completed" | "failed" | "waiting") {
-  if (status === "completed") return "✓";
-  if (status === "failed") return "!";
-  return "○";
+  if (status === "completed") return glyphs.done;
+  if (status === "failed") return glyphs.degraded;
+  return glyphs.queued;
 }
 
 function statusColor(status: "completed" | "failed" | "waiting") {
-  if (status === "completed") return "green";
-  if (status === "failed") return "yellow";
-  return "gray";
+  if (status === "completed") return theme.success;
+  if (status === "failed") return theme.warning;
+  return theme.muted;
 }
 
 function handoffLabel(index: number) {
@@ -298,7 +298,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
         id: `${artifact.id}-research`,
         agent: "Research Scout",
         message: String(request.summary ?? "Planning search context prepared."),
-        color: "green"
+        color: theme.success
       });
     } else if (artifact.kind === "mission_analysis" && parsed?.source === "qwen_planning_council") {
       const planningCouncil = parsed.planningCouncil && typeof parsed.planningCouncil === "object"
@@ -315,14 +315,14 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
         id: `${artifact.id}-map`,
         agent: artifact.status === "failed" ? "Blueprint Forge" : "Orvix Map",
         message: artifact.error ?? summarizeArtifact(artifact),
-        color: artifact.status === "failed" ? "yellow" : theme.accent
+        color: artifact.status === "failed" ? theme.warning : theme.accent
       });
     } else if (artifact.reasoningContent) {
       entries.push({
         id: `${artifact.id}-reasoning`,
         agent: artifactLabels[artifact.kind] ?? artifact.kind,
         message: artifact.reasoningContent.replace(/\s+/g, " ").slice(0, 220),
-        color: "yellow"
+        color: theme.warning
       });
     }
   }
@@ -332,7 +332,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
       id: entry.id,
       agent: shortAgentName(entry.fromAgentId),
       message: entry.message,
-      color: entry.priority === "urgent" || entry.priority === "high" ? "yellow" : "gray"
+      color: entry.priority === "urgent" || entry.priority === "high" ? theme.warning : theme.muted
     });
   }
 
@@ -349,7 +349,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
               ? "Qwen"
               : "Orvix",
       message: event.message,
-      color: event.severity === "warning" ? "yellow" : event.severity === "success" ? "green" : "gray"
+      color: event.severity === "warning" ? theme.warning : event.severity === "success" ? theme.success : theme.muted
     });
   }
 
@@ -358,7 +358,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
       id: `${agent.id}-${agent.progress}`,
       agent: agent.name,
       message: agent.currentActivity,
-      color: agent.status === "blocked" ? "yellow" : theme.accent
+      color: agent.status === "blocked" ? theme.warning : theme.accent
     });
   }
 
@@ -386,7 +386,7 @@ function PromptPreview({ agent, width }: { agent: Record<string, unknown> | unde
     "Coordinate through Orvix Book, continue with explicit assumptions, update visible product surfaces, then open a PR."
   ].join(" ");
 
-  return <WrappedText value={contract} width={width} color="gray" />;
+  return <WrappedText value={contract} width={width} color={theme.muted} />;
 }
 
 export function PlanningConsole({
@@ -441,50 +441,59 @@ export function PlanningConsole({
 
   return (
     <Box flexDirection="column" width={width}>
-      <Box borderStyle="single" borderColor={theme.accent} paddingX={1}>
-        <Text color={theme.accent} bold>ORVIX</Text>
-        <Text color="gray">  planning console  </Text>
-        <Text>{fit(state.analysis.id, 16)}</Text>
-        <Text color="gray">  {mode === "cloud" ? "Qwen Cloud" : "Mock"}  {mode === "cloud" ? apiUrl : "local"}</Text>
+      <Box borderStyle="round" borderColor={theme.accent} paddingX={1} justifyContent="space-between">
+        <Box>
+          <Text color={theme.accent} bold>{glyphs.ring} ORVIX</Text>
+          <Text color={theme.muted}>  planning console  </Text>
+          <Text color={theme.text}>{fit(state.analysis.id, 16)}</Text>
+        </Box>
+        <Text color={mode === "cloud" ? theme.cloud : theme.warning} bold>
+          {fit(mode === "cloud" ? `${glyphs.done} Qwen Cloud` : `${glyphs.degraded} Mock demo`, 16)}
+        </Text>
       </Box>
+      {mode === "cloud" ? (
+        <Box paddingX={1}>
+          <Text color={theme.faint}>{fit(apiUrl, width - 4)}</Text>
+        </Box>
+      ) : null}
 
       <Box width={width} marginTop={1}>
-        <Box width={missionPanelWidth} flexDirection="column" borderStyle="single" borderColor={theme.accent} paddingX={1} paddingY={1}>
+        <Box width={missionPanelWidth} flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1} paddingY={1}>
           <Text color={theme.accent} bold>MasterMind Brief</Text>
           <Box marginTop={1}>
-            <Text color="gray">{progressBar(progress, 16)} </Text>
+            <Text color={theme.muted}>{progressBar(progress, 16)} </Text>
             <Text>{progress}%</Text>
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Request</Text>
+            <Text color={theme.muted}>Request</Text>
             <WrappedText value={mission} width={innerMissionWidth} />
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Classification</Text>
+            <Text color={theme.muted}>Classification</Text>
             <Text>{fit(`${String(missionAnalysis?.projectType ?? state.analysis.projectType)} · ${String(missionAnalysis?.complexity ?? state.analysis.complexity)}`, innerMissionWidth)}</Text>
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Features</Text>
+            <Text color={theme.muted}>Features</Text>
             {featureList.map((feature, index) => (
-              <Text key={`feature-${index}`} color="green">✓ {fit(feature, Math.max(12, innerMissionWidth - 2))}</Text>
+              <Text key={`feature-${index}`} color={theme.success}>✓ {fit(feature, Math.max(12, innerMissionWidth - 2))}</Text>
             ))}
           </Box>
           {!compact ? (
             <Box marginTop={1} flexDirection="column">
-              <Text color="gray">Risks MasterMind is watching</Text>
+              <Text color={theme.muted}>Risks MasterMind is watching</Text>
               {riskList.map((risk, index) => (
-                <WrappedText key={`risk-${index}`} value={`! ${risk}`} width={innerMissionWidth} color="yellow" />
+                <WrappedText key={`risk-${index}`} value={`! ${risk}`} width={innerMissionWidth} color={theme.warning} />
               ))}
             </Box>
           ) : null}
         </Box>
 
-        <Box width={orgPanelWidth} flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={1}>
+        <Box width={orgPanelWidth} flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1}>
           <Text color={theme.accent} bold>Organization Forge</Text>
           <Box marginTop={1} flexDirection="column">
             <Box justifyContent="space-between">
-              <Text color="gray">Planner Broadcast</Text>
-              <Text color="gray">{broadcasts.length} live</Text>
+              <Text color={theme.muted}>Planner Broadcast</Text>
+              <Text color={theme.muted}>{broadcasts.length} live</Text>
             </Box>
           </Box>
           <Box marginTop={1} flexDirection="column">
@@ -492,14 +501,14 @@ export function PlanningConsole({
               id: "waiting",
               agent: "MasterMind",
               message: "Waiting for planner agents to publish analysis, Orvix Map, and organization signals.",
-              color: "gray"
+              color: theme.muted
             }]).map((entry) => {
               const messageWidth = Math.max(12, innerOrgWidth - 19);
               return (
                 <Box key={entry.id} flexDirection="column" marginBottom={1}>
                   <Box>
                     <AgentBadge label={entry.agent} color={entry.color} />
-                    <WrappedText value={entry.message} width={messageWidth} color={entry.color === theme.accent ? "white" : entry.color} />
+                    <WrappedText value={entry.message} width={messageWidth} color={entry.color === theme.accent ? theme.text : entry.color} />
                   </Box>
                 </Box>
               );
@@ -507,7 +516,7 @@ export function PlanningConsole({
           </Box>
           {!compact ? (
             <Box marginTop={1} flexDirection="column">
-              <Text color="gray">Company shape</Text>
+              <Text color={theme.muted}>Company shape</Text>
               <WrappedText
                 value={String(organizationDesign?.organizationName ?? "Blueprint Forge, Strategy Weaver, and MasterMind are forming the project-specific agent company.")}
                 width={innerOrgWidth}
@@ -516,7 +525,7 @@ export function PlanningConsole({
           ) : null}
         </Box>
 
-        <Box width={railWidth} flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={1}>
+        <Box width={railWidth} flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1}>
           <Text color={theme.accent} bold>Launch Rail</Text>
           <Box marginTop={1} flexDirection="column">
             {mode === "cloud" && planningStages.length > 0
@@ -536,7 +545,7 @@ export function PlanningConsole({
                       <Text color={stageGlyphColor(event?.status)}>{stageGlyph(event?.status)} </Text>
                       <Text>{fit(planningStageLabels[stage], innerRailWidth)}</Text>
                     </Text>
-                    <Text color={degraded ? "yellow" : "gray"}>  {fit(detailText, innerRailWidth)}</Text>
+                    <Text color={degraded ? theme.warning : theme.muted}>  {fit(detailText, innerRailWidth)}</Text>
                   </Box>
                 );
               })
@@ -548,14 +557,14 @@ export function PlanningConsole({
                       <Text color={statusColor(status)}>{statusGlyph(status)} </Text>
                       <Text>{fit(artifactLabels[kind], innerRailWidth)}</Text>
                     </Text>
-                    <Text color="gray">  {fit(handoffLabel(index), innerRailWidth)}</Text>
+                    <Text color={theme.muted}>  {fit(handoffLabel(index), innerRailWidth)}</Text>
                   </Box>
                 );
               })}
           </Box>
           {!compact ? (
             <Box marginTop={1} flexDirection="column">
-              <Text color="gray">Task graph preview</Text>
+              <Text color={theme.muted}>Task graph preview</Text>
               {visibleTasks.map((task, index) => (
                 <Text key={task.id}>{fit(`${index + 1}. ${task.ownerAgentId} -> ${task.branch}`, innerRailWidth)}</Text>
               ))}
@@ -565,13 +574,13 @@ export function PlanningConsole({
       </Box>
 
       <Box width={width} marginTop={1}>
-        <Box width={leftWidth} borderStyle="single" borderColor="gray" paddingX={1} paddingY={1} flexDirection="column">
+        <Box width={leftWidth} borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1} flexDirection="column">
           <Box justifyContent="space-between">
             <Text color={theme.accent} bold>Planner Book & Scaffold</Text>
-            <Text color="gray">{reasoningArtifacts.length} artifacts · {bookEntries.length} book</Text>
+            <Text color={theme.muted}>{reasoningArtifacts.length} artifacts · {bookEntries.length} book</Text>
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Project bootstrap</Text>
+            <Text color={theme.muted}>Project bootstrap</Text>
             <WrappedText
               value={bootstrap
                 ? `${String(bootstrap.label ?? bootstrap.type ?? "Project scaffold")} · ${String(bootstrap.rationale ?? "selected by MasterMind")}`
@@ -580,48 +589,48 @@ export function PlanningConsole({
             />
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Orvix Book kickoff</Text>
+            <Text color={theme.muted}>Orvix Book kickoff</Text>
             {(bookEntries.length > 0 ? bookEntries : []).map((entry) => (
               <WrappedText
                 key={entry.id}
                 value={`${entry.fromAgentId}: ${entry.message}`}
                 width={Math.max(24, leftWidth - 4)}
-                color={entry.priority === "urgent" || entry.priority === "high" ? "yellow" : "gray"}
+                color={entry.priority === "urgent" || entry.priority === "high" ? theme.warning : theme.muted}
               />
             ))}
             {bookEntries.length === 0 ? (
-              <WrappedText value="Waiting for planning agents to publish mission, stack, and acceptance notes into Orvix Book." width={Math.max(24, leftWidth - 4)} color="gray" />
+              <WrappedText value="Waiting for planning agents to publish mission, stack, and acceptance notes into Orvix Book." width={Math.max(24, leftWidth - 4)} color={theme.muted} />
             ) : null}
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Research lane</Text>
+            <Text color={theme.muted}>Research lane</Text>
             {(research.length > 0 ? research : ["research_web and fetch_url are armed for agents when docs, current practices, or inspiration are needed."]).map((item, index) => (
-              <WrappedText key={`research-${index}`} value={item} width={Math.max(24, leftWidth - 4)} color={research.length > 0 ? "green" : "gray"} />
+              <WrappedText key={`research-${index}`} value={item} width={Math.max(24, leftWidth - 4)} color={research.length > 0 ? theme.success : theme.muted} />
             ))}
           </Box>
         </Box>
 
-        <Box width={rightWidth} borderStyle="single" borderColor="gray" paddingX={1} paddingY={1} flexDirection="column">
+        <Box width={rightWidth} borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1} flexDirection="column">
           <Text color={theme.accent} bold>Planner Trace & Prompt</Text>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">What planners are doing</Text>
+            <Text color={theme.muted}>What planners are doing</Text>
             {plannerTrace.map((line, index) => (
-              <WrappedText key={`planner-trace-${index}`} value={line} width={Math.max(24, rightWidth - 4)} color={line.startsWith("reasoning:") ? "yellow" : "gray"} />
+              <WrappedText key={`planner-trace-${index}`} value={line} width={Math.max(24, rightWidth - 4)} color={line.startsWith("reasoning:") ? theme.warning : theme.muted} />
             ))}
           </Box>
           <Box marginTop={1}>
             <PromptPreview agent={featuredAgent} width={Math.max(24, rightWidth - 4)} />
           </Box>
           <Box marginTop={1} flexDirection="column">
-            <Text color="gray">Latest signal</Text>
-            <WrappedText value={latestEvent?.message ?? summarizeArtifact(latest)} width={Math.max(24, rightWidth - 4)} color={latest?.status === "failed" ? "yellow" : "gray"} />
+            <Text color={theme.muted}>Latest signal</Text>
+            <WrappedText value={latestEvent?.message ?? summarizeArtifact(latest)} width={Math.max(24, rightWidth - 4)} color={latest?.status === "failed" ? theme.warning : theme.muted} />
           </Box>
         </Box>
       </Box>
 
-      <Box borderStyle="single" borderColor="gray" paddingX={1} marginTop={1}>
+      <Box borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={1}>
         <Text color={theme.accent}>› </Text>
-        <Text color="gray">
+        <Text color={theme.muted}>
           {fit(
             mode === "cloud"
               ? "autopilot starts automatically · planner broadcast auto-scrolls latest · Tab/scroll in mission cockpit · q quit"
