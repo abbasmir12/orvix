@@ -666,10 +666,21 @@ export class QwenClient {
       } catch (error) {
         clearTimeout(timeout);
         if (controller.signal.aborted) {
+          // A model that's too slow for this prompt won't get faster on
+          // retry — move to the next model in the chain immediately instead
+          // of burning the transient-retry budget re-timing-out on the same
+          // one. Only the last model in the chain falls back to the
+          // thinking-disabled retry / final timeout error.
+          const next = modelChain.length > 1 ? firstAvailableModelIndex(modelChain, modelIndex + 1) : -1;
+          if (next !== -1) {
+            console.warn(`[qwen] ${model} timed out after ${timeoutMs}ms; switching to ${modelChain[next]} for role "${role}"`);
+            modelIndex = next;
+            continue;
+          }
           if (thinkingEnabled) {
             return this.chatDetailed(messages, { ...options, thinking: false });
           }
-          throw new Error(`Qwen request timed out after ${timeoutMs}ms`);
+          throw new Error(`Qwen request timed out after ${timeoutMs}ms (model: ${model})`);
         }
         if (transientAttempt < maxRequestAttempts - 1) {
           transientAttempt += 1;
@@ -717,7 +728,17 @@ export class QwenClient {
       const content = message?.content ?? "";
       const nativeToolCalls = parseNativeToolCalls(message);
       if (!content && nativeToolCalls.length === 0) {
-        throw new Error("Qwen response did not include message content.");
+        // Some models (esp. reasoning-heavy ones) spend their entire budget
+        // on hidden reasoning tokens and return an empty answer instead of
+        // an error — indistinguishable from success at the HTTP level, but
+        // useless. Treat it the same as a failed model: try the next one.
+        const next = modelChain.length > 1 ? firstAvailableModelIndex(modelChain, modelIndex + 1) : -1;
+        if (next !== -1) {
+          console.warn(`[qwen] ${model} returned empty content; switching to ${modelChain[next]} for role "${role}"`);
+          modelIndex = next;
+          continue;
+        }
+        throw new Error(`Qwen response did not include message content (model: ${model}).`);
       }
 
       const rawUsage = payload.usage && typeof payload.usage === "object" ? payload.usage as Record<string, unknown> : {};
