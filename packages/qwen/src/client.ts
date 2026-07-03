@@ -1326,6 +1326,67 @@ export class QwenClient {
     return parseQwenJson<{ message: string }>(await this.answerBookQuestion(input));
   }
 
+  async runtimeAcceptanceVerdict(input: {
+    mission: string;
+    productType: string;
+    acceptanceGates: string[];
+    forbiddenOutputs: string[];
+    checks: Array<{ name: string; ok: boolean; output: string }>;
+    pageSamples: Array<{ route: string; ok: boolean; textSnippet: string }>;
+    sourceSample?: string;
+  }) {
+    return this.chat([
+      {
+        role: "system",
+        content: [
+          ORVIX_OPERATING_CONSTITUTION,
+          "You are Orvix Runtime QA delivering the final mission-fit verdict on a generated project.",
+          "You receive real build/command outputs and real fetched page text from the running app.",
+          "Pass only if the evidence shows the requested product working: build passes, pages respond, and the visible/callable output matches the mission and acceptance gates rather than generic scaffold content.",
+          "Fail with precise, fixable findings when evidence shows placeholder content, missing mission behavior, or forbidden outputs.",
+          "Do not fail for polish or production-hardening concerns; this is a working-prototype gate.",
+          "Return valid compact JSON only. No markdown."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          mission: input.mission,
+          productType: input.productType,
+          acceptanceGates: input.acceptanceGates,
+          forbiddenOutputs: input.forbiddenOutputs,
+          commandChecks: input.checks.map((check) => ({ ...check, output: check.output.slice(0, 1500) })),
+          pageSamples: input.pageSamples.map((page) => ({ ...page, textSnippet: page.textSnippet.slice(0, 2000) })),
+          sourceSample: input.sourceSample?.slice(0, 6000),
+          outputSchema: {
+            pass: "true | false",
+            summary: "one-sentence Runtime QA verdict",
+            findings: ["specific fixable problems; empty array when passing"]
+          }
+        })
+      }
+    ], { temperature: 0.05, json: true, role: "review" });
+  }
+
+  async runtimeAcceptanceVerdictJson(input: {
+    mission: string;
+    productType: string;
+    acceptanceGates: string[];
+    forbiddenOutputs: string[];
+    checks: Array<{ name: string; ok: boolean; output: string }>;
+    pageSamples: Array<{ route: string; ok: boolean; textSnippet: string }>;
+    sourceSample?: string;
+  }) {
+    const verdict = parseQwenJson<{ pass: boolean | string; summary?: string; findings?: string[] }>(
+      await this.runtimeAcceptanceVerdict(input)
+    );
+    return {
+      pass: verdict.pass === true || verdict.pass === "true",
+      summary: verdict.summary ?? "",
+      findings: Array.isArray(verdict.findings) ? verdict.findings.map(String) : []
+    };
+  }
+
   async reviewWorkspacePullRequest(input: {
     mission: string;
     pr: PullRequest;

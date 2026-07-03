@@ -3,7 +3,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { writeStateSnapshot } from "@orvix/core";
-import { addReasoningArtifact, appendEvent, broadcast, workspaceOf, type MissionRun } from "./run.js";
+import { isQwenConfigured, QwenClient } from "@orvix/qwen";
+import { addReasoningArtifact, appendEvent, broadcast, orvixMapContext, workspaceOf, type MissionRun } from "./run.js";
 import { postBookEntry } from "./book.js";
 import { isNonBlockingReviewerPr } from "./review.js";
 
@@ -18,6 +19,8 @@ export type RuntimeAcceptanceResult = {
   ok: boolean;
   checks: Array<{ name: string; ok: boolean; output: string }>;
   findings: string[];
+  /** True when the gate failed only because the Qwen judge was unreachable. */
+  judgeUnavailable?: boolean;
 };
 
 export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<RuntimeAcceptanceResult> {
@@ -42,6 +45,7 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
     checks.push(runCommandCheck(repoDir, "python src/main.py", ["src/main.py"], "python"));
   }
 
+  const pageSamples: Array<{ route: string; ok: boolean; textSnippet: string }> = [];
   if (projectType === "nextjs" || projectType === "react-vite") {
     const staticFindings = scanMissionPlaceholders(run);
     findings.push(...staticFindings);
@@ -49,11 +53,44 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
       const pageChecks = await runWebPageSmokeChecks(run);
       checks.push(...pageChecks.checks);
       findings.push(...pageChecks.findings);
+      pageSamples.push(...pageChecks.pageSamples);
     }
   }
 
   const failedChecks = checks.filter((check) => !check.ok);
   findings.push(...failedChecks.map((check) => `${check.name} failed: ${check.output.slice(0, 500)}`));
+
+  // Deterministic evidence is clean; in qwen mode, Runtime QA (Qwen) now
+  // judges mission fit from the real build output and fetched pages instead
+  // of hardcoded keyword scans.
+  if (findings.length === 0 && run.mode === "qwen" && isQwenConfigured()) {
+    const map = orvixMapContext(run);
+    try {
+      const verdict = await new QwenClient().runtimeAcceptanceVerdictJson({
+        mission: run.mission,
+        productType: projectType,
+        acceptanceGates: map?.acceptanceGates ?? run.state.analysis.successCriteria,
+        forbiddenOutputs: map?.forbiddenOutputs ?? [],
+        checks,
+        pageSamples,
+        sourceSample: primarySourceSample(run)
+      });
+      if (verdict.pass) {
+        appendEvent(run, `Runtime QA mission-fit verdict: ${verdict.summary || "generated product matches the mission"}`, "success");
+      } else {
+        findings.push(...(verdict.findings.length > 0 ? verdict.findings : [verdict.summary || "Runtime QA rejected mission fit without details"]));
+        appendEvent(run, `Runtime QA mission-fit verdict failed: ${verdict.summary}`, "warning");
+      }
+    } catch (error) {
+      // An unavailable judge must not silently pass the gate, but it is not
+      // the agents' fault either: fail without routing a revision so the
+      // scheduler simply retries the gate on a later turn.
+      const message = `Runtime QA verdict unavailable: ${error instanceof Error ? error.message : "Qwen error"}; acceptance gate will retry`;
+      appendEvent(run, message, "warning");
+      return { ok: false, checks, findings: [message], judgeUnavailable: true };
+    }
+  }
+
   const ok = findings.length === 0;
 
   addReasoningArtifact(run, {
@@ -152,63 +189,25 @@ export function scanMissionPlaceholders(run: MissionRun) {
     }
   }
 
-  const missionTerms = missionAcceptanceTerms(run.mission);
-  const appText = files.map((file) => readFileSync(file, "utf8")).join("\n").toLowerCase();
-  const missingTerms = missionTerms.filter((term) => !appText.includes(term));
-  if (missingTerms.length > 0) {
-    findings.push(`Visible app files do not clearly contain mission terms: ${missingTerms.join(", ")}.`);
-  }
-
-  findings.push(...scanMissionSpecificSourceIssues(run, files));
-
   return findings;
 }
 
-export function scanMissionSpecificSourceIssues(run: MissionRun, files: string[]) {
-  const findings: string[] = [];
-  const mission = run.mission.toLowerCase();
-  const projectType = workspaceOf(run).projectType ?? "generic";
-  const sourceByRelativePath = new Map(files.map((file) => [relativePath(workspaceOf(run).repoDir, file), readFileSync(file, "utf8")]));
-  const combined = Array.from(sourceByRelativePath.values()).join("\n");
-  const appSource = sourceByRelativePath.get("src/App.tsx") ?? sourceByRelativePath.get("app/page.tsx") ?? "";
-
-  if (/\bmock|placeholder|stub/i.test(appSource)) {
-    findings.push("Primary app entry still contains mock/placeholder/stub implementation text.");
-  }
-
-  if (projectType === "react-vite" && /game|2d|canvas|playable|score|keyboard/.test(mission)) {
-    const hasCanvas = /<canvas\b/i.test(appSource) || /createElement\(["']canvas["']/i.test(appSource);
-    if (!hasCanvas) {
-      findings.push("React game mission does not mount a canvas in src/App.tsx.");
-    }
-    if (sourceByRelativePath.has("src/game/useGameLoop.ts") && !/useGameLoop/.test(appSource.replace(/function\s+useGameLoopMock[\s\S]*?\n}/, ""))) {
-      findings.push("src/App.tsx does not wire the real src/game/useGameLoop.ts hook.");
-    }
-    if (sourceByRelativePath.has("src/game/input.ts") && !/useInput/.test(appSource)) {
-      findings.push("src/App.tsx does not wire the real src/game/input.ts hook.");
-    }
-    if (sourceByRelativePath.has("src/game/renderer.ts") && !/render/.test(appSource)) {
-      findings.push("src/App.tsx does not wire the real src/game/renderer.ts renderer.");
-    }
-    for (const term of ["score", "gameover", "playing"]) {
-      if (!combined.toLowerCase().includes(term)) {
-        findings.push(`React game source does not include required game state term: ${term}.`);
-      }
+/** The visible entry file, for the Runtime QA judge to sanity-check mission fit. */
+export function primarySourceSample(run: MissionRun) {
+  const repoDir = workspaceOf(run).repoDir;
+  for (const candidate of ["src/App.tsx", "app/page.tsx", "src/index.ts", "src/main.py"]) {
+    const absolute = resolve(repoDir, candidate);
+    if (existsSync(absolute)) {
+      return `// ${candidate}\n${readFileSync(absolute, "utf8")}`;
     }
   }
-
-  return findings;
-}
-
-export function missionAcceptanceTerms(mission: string) {
-  const text = mission.toLowerCase();
-  return ["crm", "auth", "dashboard", "contacts", "notes"]
-    .filter((term) => text.includes(term));
+  return undefined;
 }
 
 export async function runWebPageSmokeChecks(run: MissionRun) {
   const checks: RuntimeAcceptanceResult["checks"] = [];
   const findings: string[] = [];
+  const pageSamples: Array<{ route: string; ok: boolean; textSnippet: string }> = [];
   const port = await findFreePort(3100);
   const isNext = workspaceOf(run).projectType === "nextjs";
   const args = isNext ? ["run", "dev", "--", "-p", String(port)] : ["run", "dev", "--", "--host", "127.0.0.1", "--port", String(port)];
@@ -226,13 +225,14 @@ export async function runWebPageSmokeChecks(run: MissionRun) {
     checks.push({ name: "npm run dev", ok: ready, output: logs.slice(-2000) });
     if (!ready) {
       findings.push(`Development server did not become reachable. Logs: ${logs.slice(-800)}`);
-      return { checks, findings };
+      return { checks, findings, pageSamples };
     }
 
-    const routes = runtimeRoutesForMission(run.mission);
+    const routes = runtimeRoutesFromMap(run);
     for (const route of routes) {
       const result = await fetchText(`http://127.0.0.1:${port}${route}`);
       checks.push({ name: `GET ${route}`, ok: result.ok, output: result.text.slice(0, 800) });
+      pageSamples.push({ route, ok: result.ok, textSnippet: stripPageHtml(result.text).slice(0, 2000) });
       if (!result.ok) {
         findings.push(`${route} did not return a successful response.`);
       }
@@ -244,17 +244,31 @@ export async function runWebPageSmokeChecks(run: MissionRun) {
     child.kill("SIGTERM");
   }
 
-  return { checks, findings };
+  return { checks, findings, pageSamples };
 }
 
-export function runtimeRoutesForMission(mission: string) {
-  const text = mission.toLowerCase();
+/** Smoke-test routes come from the locked Orvix Map surfaces, not mission keywords. */
+export function runtimeRoutesFromMap(run: MissionRun) {
   const routes = ["/"];
-  if (text.includes("dashboard")) routes.push("/dashboard");
-  if (text.includes("contacts")) routes.push("/dashboard/contacts", "/contacts");
-  if (text.includes("notes")) routes.push("/notes");
-  if (text.includes("auth") || text.includes("login")) routes.push("/login");
+  const map = orvixMapContext(run);
+  for (const surface of map?.surfaces ?? []) {
+    if (!surface || typeof surface !== "object") continue;
+    const type = String(surface.type ?? "");
+    const path = String(surface.path ?? "");
+    if ((type === "route" || type === "screen" || type === "page") && path.startsWith("/")) {
+      routes.push(path);
+    }
+  }
   return Array.from(new Set(routes)).slice(0, 6);
+}
+
+function stripPageHtml(input: string) {
+  return input
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export async function waitForUrl(url: string, timeoutMs: number) {
@@ -366,6 +380,71 @@ export function findRuntimeFixOwner(run: MissionRun) {
   return run.state.agents.find((agent) => /frontend|ui|dashboard|page|interface|experience/i.test(`${agent.name} ${agent.role}`)) ??
     run.state.agents.find((agent) => /qa|test|runtime|quality|validator/i.test(`${agent.name} ${agent.role}`)) ??
     run.state.agents.find((agent) => agent.id !== "mastermind-agent");
+}
+
+/**
+ * Fast build check on main after a merge wave. Catches "looks good but does
+ * not compile" merges immediately instead of at the final acceptance gate.
+ * On failure the merging PR's owner gets a revision with the build output.
+ */
+export async function runIncrementalBuildGate(run: MissionRun, mergedPrIds: number[]) {
+  const workspace = workspaceOf(run);
+  const projectType = workspace.projectType ?? "generic";
+  if (!["nextjs", "react-vite", "express-api", "node-cli"].includes(projectType)) {
+    return { ok: true, skipped: true };
+  }
+
+  appendEvent(run, "Runtime QA started incremental build check on main after merge wave", "info");
+  const checks: RuntimeAcceptanceResult["checks"] = [];
+  if (!existsSync(resolve(workspace.repoDir, "node_modules"))) {
+    checks.push(runCommandCheck(workspace.repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
+  }
+  checks.push(runCommandCheck(workspace.repoDir, "npm run build", ["run", "build"]));
+
+  const failed = checks.filter((check) => !check.ok);
+  if (failed.length === 0) {
+    appendEvent(run, "Incremental build check passed on main", "success");
+    return { ok: true, checks };
+  }
+
+  const findings = failed.map((check) => `${check.name} failed after merge: ${check.output.slice(0, 600)}`);
+  const mergedPrs = run.state.pullRequests.filter((pr) => mergedPrIds.includes(pr.id));
+  const owners = Array.from(new Set(mergedPrs.map((pr) => pr.ownerAgentId)));
+  postBookEntry(run, {
+    type: "conflict",
+    fromAgentId: "mastermind-agent",
+    toAgentIds: owners,
+    scope: "mission",
+    visibility: owners.length > 0 ? "mentioned" : "global",
+    topics: ["build-break", "runtime", "merge", ...mergedPrs.map((pr) => pr.branch)],
+    priority: "urgent",
+    status: "open",
+    message: [
+      `The main branch stopped building after merging PR${mergedPrIds.length === 1 ? "" : "s"} ${mergedPrIds.map((id) => `#${id}`).join(", ")}.`,
+      ...findings.map((finding) => `- ${finding}`),
+      "The merging owner(s) must fix the build in a revision before further merges land on a broken main."
+    ].join("\n")
+  });
+
+  run.state = {
+    ...run.state,
+    pullRequests: run.state.pullRequests.map((pr) => mergedPrIds.includes(pr.id)
+      ? {
+          ...pr,
+          status: "Changes requested",
+          reviewerStatus: "Requested changes",
+          comments: [...pr.comments, `Build broke on main after this merge: ${findings[0]?.slice(0, 200)}`].slice(-6)
+        }
+      : pr),
+    tasks: run.state.tasks.map((task) => owners.includes(task.ownerAgentId) ? { ...task, status: "blocked" } : task),
+    agents: run.state.agents.map((agent) => owners.includes(agent.id)
+      ? { ...agent, status: "blocked", currentActivity: "Fixing post-merge build break" }
+      : agent)
+  };
+  appendEvent(run, `Incremental build check failed after merge wave: ${findings[0]?.slice(0, 160)}`, "warning");
+  writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+  broadcast(run, "state", run.state);
+  return { ok: false, checks, findings };
 }
 
 export function hasRuntimeGatePassed(run: MissionRun) {

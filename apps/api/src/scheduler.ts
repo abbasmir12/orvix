@@ -12,7 +12,7 @@ import {
 import { agentName, getBookContext, markSignalRead, postBookEntry } from "./book.js";
 import { executeAgentTask, getCompletedTaskIds, getExecutableTasks, getExecutedBranches } from "./agentRuntime.js";
 import { escalatePullRequestReview, getReviewAttemptCount, isNonBlockingReviewerPr, reviewPullRequest } from "./review.js";
-import { runRuntimeAcceptanceGate, shouldRunRuntimeAcceptance } from "./acceptance.js";
+import { runIncrementalBuildGate, runRuntimeAcceptanceGate, shouldRunRuntimeAcceptance } from "./acceptance.js";
 
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -127,6 +127,13 @@ export async function runSchedulerTurn(run: MissionRun) {
     const concurrency = schedulerConcurrency(run, "review");
     appendEvent(run, `Parallel review wave (${concurrency}x): ${reviewablePrs.map((pr) => `PR #${pr.id}`).join(", ")}`, "info");
     const results = await mapWithConcurrency(reviewablePrs, concurrency, (pr) => reviewPullRequest(run, pr.id));
+    const mergedPrIds = results
+      .filter((result): result is typeof result & { approved: boolean; pr: { id: number } } =>
+        Boolean((result as { approved?: boolean }).approved && (result as { pr?: { id?: number } }).pr?.id))
+      .map((result) => result.pr.id);
+    if (mergedPrIds.length > 0) {
+      await runIncrementalBuildGate(run, mergedPrIds);
+    }
     return {
       ok: results.every((result) => Boolean(result.ok)) || results.some(isRecoverableReviewFailure),
       kind: "review_wave",
