@@ -6,7 +6,7 @@ import {
   type AgentToolName,
   type SimulationState
 } from "@orvix/core";
-import { createAgentSessionMessages, isQwenConfigured, QwenClient, type ChatMessage } from "@orvix/qwen";
+import { createAgentSessionMessages, isQwenConfigured, QwenClient, withQwenUsageRun, type ChatMessage } from "@orvix/qwen";
 import {
   branchExists,
   checkoutGitBranch,
@@ -32,6 +32,7 @@ import {
   mapWorkPacketForAgent,
   orvixMapContext,
   stopScriptedTimers,
+  usesQwenReasoning,
   workspaceOf,
   type MissionRun
 } from "./run.js";
@@ -143,14 +144,14 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
   updateAgentTaskState(run, agent.id, task.id, "active", options.revision ? "Applying reviewer changes" : "Working in agent session");
 
   let outcome: AgentSessionOutcome;
-  if (run.mode === "qwen" && isQwenConfigured()) {
+  if (usesQwenReasoning(run) && isQwenConfigured()) {
     try {
-      outcome = await runAgentSession(run, agent, task, workspace, allowedTools, {
+      outcome = await withQwenUsageRun(run.id, () => runAgentSession(run, agent, task, workspace, allowedTools, {
         workspaceFiles,
         bookContext,
         reviewFeedback,
         revision: Boolean(options.revision)
-      });
+      }));
     } catch (error) {
       const message = `${agent.name} Qwen session failed; no deterministic implementation fallback was applied: ${error instanceof Error ? error.message : "Unknown error"}`;
       updateAgentTaskState(run, agent.id, task.id, "blocked", "Qwen agent session failed");
@@ -176,7 +177,7 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
     entry.result.ok && (entry.toolCall.tool === "write_file" || entry.toolCall.tool === "delete_file")
   );
 
-  if (run.mode === "qwen" && !hasImplementation && implementationTaskRequiresEvidence(task)) {
+  if (usesQwenReasoning(run) && !hasImplementation && implementationTaskRequiresEvidence(task)) {
     const retryCount = getNoImplementationRetryCount(run, task.id);
     if (retryCount < 1) {
       const message = `${agent.name} finished the session without successful write_file or delete_file calls; MasterMind is requeuing one concrete implementation retry with an explicit Orvix Map contract.`;
@@ -377,8 +378,14 @@ async function runAgentSession(
   }
 ): Promise<AgentSessionOutcome> {
   const qwen = new QwenClient();
-  const maxTurns = envPositiveInt("QWEN_AGENT_MAX_TURNS", 10, 24);
-  const maxToolCalls = agentExecutionToolCallLimit;
+  // Solo baseline owns the whole mission in one session, so it gets a larger
+  // budget than a specialist agent owning one workstream in society mode.
+  const maxTurns = run.mode === "solo"
+    ? envPositiveInt("QWEN_SOLO_AGENT_MAX_TURNS", 40, 80)
+    : envPositiveInt("QWEN_AGENT_MAX_TURNS", 10, 24);
+  const maxToolCalls = run.mode === "solo"
+    ? envPositiveInt("QWEN_SOLO_AGENT_MAX_TOOL_CALLS", 150, 400)
+    : agentExecutionToolCallLimit;
   const messages: ChatMessage[] = createAgentSessionMessages({
     mission: run.mission,
     agent,

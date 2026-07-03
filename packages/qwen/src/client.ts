@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   Agent,
   AgentExecutionPlan,
@@ -147,6 +148,7 @@ export type QwenUsageEvent = QwenUsage & {
   model: string;
   role: QwenRole;
   durationMs: number;
+  runId?: string;
 };
 
 type QwenUsageListener = (event: QwenUsageEvent) => void;
@@ -155,6 +157,13 @@ let usageListener: QwenUsageListener | null = null;
 
 export function setQwenUsageListener(listener: QwenUsageListener | null) {
   usageListener = listener;
+}
+
+const usageRunContext = new AsyncLocalStorage<string>();
+
+/** Tags every Qwen call made anywhere within `fn`'s async call graph with `runId` for metrics attribution. */
+export function withQwenUsageRun<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+  return usageRunContext.run(runId, fn);
 }
 
 export type ChatMessage = {
@@ -671,7 +680,7 @@ export class QwenClient {
         completionTokens: Number(rawUsage.completion_tokens ?? 0),
         totalTokens: Number(rawUsage.total_tokens ?? 0)
       };
-      usageListener?.({ ...usage, model, role, durationMs: Date.now() - startedAt });
+      usageListener?.({ ...usage, model, role, durationMs: Date.now() - startedAt, runId: usageRunContext.getStore() });
 
       const reasoningContent = typeof message?.reasoning_content === "string"
         ? message.reasoning_content

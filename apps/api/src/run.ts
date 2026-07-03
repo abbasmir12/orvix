@@ -12,7 +12,7 @@ import {
   type SimulationState,
   type TimelineEvent
 } from "@orvix/core";
-import { normalizeOrvixMap, type OrvixMap, type QwenPlanningResearchRequest } from "@orvix/qwen";
+import { normalizeOrvixMap, setQwenUsageListener, type OrvixMap, type QwenPlanningResearchRequest, type QwenUsageEvent } from "@orvix/qwen";
 import type { Workspace } from "@orvix/workspace";
 import { envPositiveInt } from "./envConfig.js";
 
@@ -35,10 +35,37 @@ export type PlanningStageEvent = {
   at: string;
 };
 
+export type MissionMode = "mock" | "qwen" | "solo";
+
+export type RunMetrics = {
+  qwenCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  totalQwenDurationMs: number;
+  callsByRole: Record<string, number>;
+  tokensByRole: Record<string, number>;
+  startedAt: number;
+  completedAt?: number;
+};
+
+export function createRunMetrics(): RunMetrics {
+  return {
+    qwenCalls: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    totalQwenDurationMs: 0,
+    callsByRole: {},
+    tokensByRole: {},
+    startedAt: Date.now()
+  };
+}
+
 export type MissionRun = {
   id: string;
   mission: string;
-  mode: "mock" | "qwen";
+  mode: MissionMode;
   state: SimulationState;
   stepIndex: number;
   orchestratorTimer?: NodeJS.Timeout;
@@ -53,7 +80,13 @@ export type MissionRun = {
   autopilotActive?: boolean;
   autoAutopilotStarted?: boolean;
   qwenPlanningComplete?: boolean;
+  metrics: RunMetrics;
 };
+
+/** Qwen mode and its solo-baseline variant both use real multi-turn agent sessions. */
+export function usesQwenReasoning(run: MissionRun) {
+  return run.mode === "qwen" || run.mode === "solo";
+}
 
 /** Workspace accessor for post-planning code paths; HTTP routes must 409 before reaching here. */
 export function workspaceOf(run: MissionRun): Workspace {
@@ -118,10 +151,68 @@ export const reviewAttemptLimit = 50;
 export const agentExecutionToolCallLimit = 32;
 
 export function schedulerConcurrency(run: MissionRun, kind: "execution" | "revision" | "review") {
-  if (run.mode !== "qwen") return 4;
+  if (!usesQwenReasoning(run)) return 4;
   if (kind === "execution") return envPositiveInt("QWEN_EXECUTION_CONCURRENCY", 4, 8);
   if (kind === "revision") return envPositiveInt("QWEN_REVISION_CONCURRENCY", 3, 8);
   return envPositiveInt("QWEN_REVIEW_CONCURRENCY", 2, 8);
+}
+
+/** Attributes every Qwen usage event tagged with a runId (via withQwenUsageRun) to that run's metrics. */
+setQwenUsageListener((event: QwenUsageEvent) => {
+  if (!event.runId) return;
+  const run = runs.get(event.runId);
+  if (!run) return;
+  const metrics = run.metrics;
+  metrics.qwenCalls += 1;
+  metrics.promptTokens += event.promptTokens;
+  metrics.completionTokens += event.completionTokens;
+  metrics.totalTokens += event.totalTokens;
+  metrics.totalQwenDurationMs += event.durationMs;
+  metrics.callsByRole[event.role] = (metrics.callsByRole[event.role] ?? 0) + 1;
+  metrics.tokensByRole[event.role] = (metrics.tokensByRole[event.role] ?? 0) + event.totalTokens;
+});
+
+function countFilesWritten(run: MissionRun) {
+  const paths = new Set<string>();
+  for (const artifact of run.reasoningArtifacts) {
+    if (artifact.kind !== "agent_execution" || !artifact.content) continue;
+    try {
+      const parsed = JSON.parse(artifact.content) as {
+        plan?: { toolCalls?: Array<{ tool?: string; path?: string }> };
+      };
+      for (const call of parsed.plan?.toolCalls ?? []) {
+        if (call.tool === "write_file" && call.path) paths.add(call.path);
+      }
+    } catch {
+      // best-effort metric; malformed artifact content is skipped
+    }
+  }
+  return paths.size;
+}
+
+export function metricsSummary(run: MissionRun) {
+  const metrics = run.metrics;
+  const wallClockMs = (metrics.completedAt ?? Date.now()) - metrics.startedAt;
+  return {
+    missionId: run.id,
+    mode: run.mode,
+    isComplete: run.state.isComplete,
+    wallClockMs,
+    qwenCalls: metrics.qwenCalls,
+    promptTokens: metrics.promptTokens,
+    completionTokens: metrics.completionTokens,
+    totalTokens: metrics.totalTokens,
+    totalQwenDurationMs: metrics.totalQwenDurationMs,
+    callsByRole: metrics.callsByRole,
+    tokensByRole: metrics.tokensByRole,
+    agents: run.state.agents.length,
+    tasks: run.state.tasks.length,
+    tasksCompleted: run.state.tasks.filter((task) => task.status === "completed").length,
+    pullRequests: run.state.pullRequests.length,
+    pullRequestsApproved: run.state.pullRequests.filter((pr) => pr.status === "Approved").length,
+    filesWritten: countFilesWritten(run),
+    reviewComments: run.state.pullRequests.reduce((sum, pr) => sum + pr.comments.length, 0)
+  };
 }
 
 export function writeSse(response: ServerResponse, event: string, data: unknown) {

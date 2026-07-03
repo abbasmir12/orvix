@@ -1,5 +1,5 @@
 import { writeStateSnapshot, type AgentSignal, type OrvixBookEntry, type PullRequestReviewDecision } from "@orvix/core";
-import { isQwenConfigured, QwenClient } from "@orvix/qwen";
+import { isQwenConfigured, QwenClient, withQwenUsageRun } from "@orvix/qwen";
 import {
   appendEvent,
   broadcast,
@@ -7,6 +7,7 @@ import {
   runSummary,
   schedulerConcurrency,
   stopScriptedTimers,
+  usesQwenReasoning,
   type MissionRun
 } from "./run.js";
 import { agentName, getBookContext, markSignalRead, postBookEntry } from "./book.js";
@@ -57,6 +58,7 @@ export async function runSchedulerTurn(run: MissionRun) {
       isComplete: true,
       agents: run.state.agents.map((agent) => ({ ...agent, status: "completed", currentActivity: "Mission complete", progress: 100 }))
     };
+    run.metrics.completedAt = Date.now();
     appendEvent(run, "Scheduler completed mission: required implementation PRs approved and runtime acceptance passed", "success");
     writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
     broadcast(run, "complete", {
@@ -185,6 +187,7 @@ export async function runSchedulerTurn(run: MissionRun) {
       isComplete: true,
       agents: run.state.agents.map((agent) => ({ ...agent, status: "completed", currentActivity: "Mission complete", progress: 100 }))
     };
+    run.metrics.completedAt = Date.now();
     appendEvent(run, "Scheduler completed mission: all executable work approved", "success");
     writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
     broadcast(run, "complete", {
@@ -221,7 +224,7 @@ export function startAutomaticAutopilot(run: MissionRun) {
 }
 
 export async function runAutopilot(run: MissionRun, cycles = 300, source: "manual" | "automatic" = "manual") {
-  if (run.mode === "qwen" && !run.qwenPlanningComplete) {
+  if (usesQwenReasoning(run) && !run.qwenPlanningComplete) {
     return {
       ok: true,
       cycles: 0,
@@ -317,15 +320,15 @@ export async function createSignalAnswer(run: MissionRun, agentId: string, quest
   const ownedTask = run.state.tasks.find((task) => task.ownerAgentId === agentId) ?? null;
 
   let message: string;
-  if (run.mode === "qwen" && isQwenConfigured()) {
+  if (usesQwenReasoning(run) && isQwenConfigured()) {
     try {
-      const answer = await new QwenClient().answerBookQuestionJson({
+      const answer = await withQwenUsageRun(run.id, () => new QwenClient().answerBookQuestionJson({
         mission: run.mission,
         agent: agent ?? { id: agentId, name: agentId, role: "specialist", currentActivity: "", status: "active", progress: 0, confidence: 0.7 },
         ownedTask,
         question,
         bookContext: getBookContext(run, agentId, question.taskId)
-      });
+      }));
       message = answer.message?.trim() ?? "";
       if (!message) throw new Error("empty_answer");
     } catch (error) {

@@ -7,7 +7,7 @@ import type {
   OrvixBookVisibility
 } from "@orvix/core";
 import { getGitStatus, listWorkspaceFiles } from "@orvix/workspace";
-import { appendEvent, port, runs, runSummary, writeSse } from "./run.js";
+import { appendEvent, metricsSummary, port, runs, runSummary, writeSse, type MissionMode } from "./run.js";
 import { agentName, getBookContext, postBookEntry } from "./book.js";
 import { createRun } from "./planning.js";
 import { executeAgentTask, executeGitTool, executeNextAgentTask } from "./agentRuntime.js";
@@ -76,13 +76,13 @@ export const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/missions") {
-      const body = await readJson<{ mission?: string; mode?: "mock" | "qwen" }>(request);
+      const body = await readJson<{ mission?: string; mode?: MissionMode }>(request);
       if (!body.mission?.trim()) {
         sendJson(response, 400, { error: "mission_required" });
         return;
       }
 
-      const mode = body.mode === "qwen" ? "qwen" : "mock";
+      const mode: MissionMode = body.mode === "qwen" || body.mode === "solo" ? body.mode : "mock";
       const run = createRun(body.mission.trim(), mode);
       sendJson(response, 201, {
         missionId: run.id,
@@ -109,6 +109,18 @@ export const server = createServer(async (request, response) => {
         artifactsDir: run.store.artifactsDir,
         workspace: run.workspace ?? null
       });
+      return;
+    }
+
+    const metricsMatch = url.pathname.match(/^\/missions\/([^/]+)\/metrics$/);
+    if (request.method === "GET" && metricsMatch) {
+      const run = runs.get(metricsMatch[1]);
+      if (!run) {
+        notFound(response);
+        return;
+      }
+
+      sendJson(response, 200, metricsSummary(run));
       return;
     }
 

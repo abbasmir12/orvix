@@ -6,7 +6,7 @@ import {
   type PullRequestReviewDecision,
   type SimulationState
 } from "@orvix/core";
-import { isQwenConfigured, QwenClient } from "@orvix/qwen";
+import { isQwenConfigured, QwenClient, withQwenUsageRun } from "@orvix/qwen";
 import {
   branchExists,
   getBranchDiff,
@@ -22,6 +22,7 @@ import {
   broadcast,
   orvixMapContext,
   reviewAttemptLimit,
+  usesQwenReasoning,
   workspaceOf,
   type MissionRun
 } from "./run.js";
@@ -59,7 +60,7 @@ export function createStaticPrReviewDecision(
     /(^|\/)(package\.json|vite\.config\.[tj]s|tsconfig\.json|tailwind\.config\.[tj]s|next\.config\.[tj]s)$/.test(file)
   );
   const markdownOnly = changedFiles.every((file) => /\.(md|mdx|txt)$/i.test(file) || /^(docs|work)\//.test(file));
-  if (run.mode === "qwen" && !isNonBlockingReviewerPr(run, pr) && implementationTaskRequiresSource(task) && markdownOnly && sourceLike.length === 0) {
+  if (usesQwenReasoning(run) && !isNonBlockingReviewerPr(run, pr) && implementationTaskRequiresSource(task) && markdownOnly && sourceLike.length === 0) {
     return {
       decision: "request_changes",
       summary: `PR #${pr.id} only changes documentation/work notes, not implementation files.`,
@@ -195,8 +196,8 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
       git: getGitStatus(workspaceOf(run))
     };
   }
-  const decision = run.mode === "qwen" && isQwenConfigured()
-    ? await new QwenClient().reviewWorkspacePullRequestJson({
+  const decision = usesQwenReasoning(run) && isQwenConfigured()
+    ? await withQwenUsageRun(run.id, () => new QwenClient().reviewWorkspacePullRequestJson({
       mission: run.mission,
       pr,
       diff: diff.output,
@@ -213,7 +214,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
         signals: run.state.agentSignals.slice(-40),
         ownershipIndex: run.state.ownershipIndex
       }
-    })
+    }))
     : createMockReviewDecision(pr, diff.output);
 
   const approved = decision.decision === "approve";

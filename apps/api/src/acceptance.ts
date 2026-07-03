@@ -3,8 +3,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { writeStateSnapshot } from "@orvix/core";
-import { isQwenConfigured, QwenClient } from "@orvix/qwen";
-import { addReasoningArtifact, appendEvent, broadcast, orvixMapContext, workspaceOf, type MissionRun } from "./run.js";
+import { isQwenConfigured, QwenClient, withQwenUsageRun } from "@orvix/qwen";
+import { addReasoningArtifact, appendEvent, broadcast, orvixMapContext, usesQwenReasoning, workspaceOf, type MissionRun } from "./run.js";
 import { postBookEntry } from "./book.js";
 import { isNonBlockingReviewerPr } from "./review.js";
 
@@ -63,10 +63,10 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
   // Deterministic evidence is clean; in qwen mode, Runtime QA (Qwen) now
   // judges mission fit from the real build output and fetched pages instead
   // of hardcoded keyword scans.
-  if (findings.length === 0 && run.mode === "qwen" && isQwenConfigured()) {
+  if (findings.length === 0 && usesQwenReasoning(run) && isQwenConfigured()) {
     const map = orvixMapContext(run);
     try {
-      const verdict = await new QwenClient().runtimeAcceptanceVerdictJson({
+      const verdict = await withQwenUsageRun(run.id, () => new QwenClient().runtimeAcceptanceVerdictJson({
         mission: run.mission,
         productType: projectType,
         acceptanceGates: map?.acceptanceGates ?? run.state.analysis.successCriteria,
@@ -74,7 +74,7 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
         checks,
         pageSamples,
         sourceSample: primarySourceSample(run)
-      });
+      }));
       if (verdict.pass) {
         appendEvent(run, `Runtime QA mission-fit verdict: ${verdict.summary || "generated product matches the mission"}`, "success");
       } else {

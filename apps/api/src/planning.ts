@@ -13,6 +13,7 @@ import {
 import {
   isQwenConfigured,
   QwenClient,
+  withQwenUsageRun,
   type OrvixMap,
   type QwenPlanningCouncilDraft,
   type QwenPlanningResearchRequest,
@@ -24,12 +25,15 @@ import {
   addReasoningArtifact,
   appendEvent,
   broadcast,
+  createRunMetrics,
   orvixMapContext,
   recordPlanningStage,
   runs,
   scheduleNextStep,
   scheduleOrchestratorStep,
+  usesQwenReasoning,
   workspaceOf,
+  type MissionMode,
   type MissionRun,
   type PlanningResearchResult
 } from "./run.js";
@@ -179,6 +183,35 @@ export function createEmergencyOrvixMap(run: MissionRun, reason: string): OrvixM
       "Visible scaffold placeholder content as the final app"
     ],
     openQuestions: []
+  };
+}
+
+/**
+ * Solo-mode baseline: no Strategy Weaver call, no team, no Orvix Book
+ * negotiation. One generalist agent owns the entire mission as a single
+ * multi-turn session so society-mode gains can be measured against it.
+ */
+export function createSoloOrganization(run: MissionRun, orvixMap: OrvixMap | null): OrganizationDesign {
+  const acceptanceCriteria = Array.from(new Set([
+    ...(orvixMap?.acceptanceGates ?? []),
+    ...(run.state.analysis.successCriteria ?? [])
+  ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+
+  return {
+    organizationName: "Solo Baseline",
+    agents: [
+      {
+        id: "solo-generalist-agent",
+        name: "Solo Generalist Engineer",
+        role: "Single-agent baseline: builds the entire mission alone, sequentially, with no team or Orvix Book negotiation",
+        goal: `Build the complete mission end-to-end alone: ${run.mission}`,
+        tools: ["read_file", "write_file", "delete_file", "list_files", "get_diff", "commit_changes", "open_pr", "complete_task"],
+        acceptanceCriteria: acceptanceCriteria.length > 0
+          ? acceptanceCriteria
+          : ["Mission requirements are fully implemented", "Project builds and runs"],
+        dependencies: []
+      }
+    ]
   };
 }
 
@@ -351,21 +384,26 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
   stageStartedAt = Date.now();
   recordPlanningStage(run, "organization", "started");
   try {
-    appendEvent(run, "Strategy Weaver organization design started with Qwen", "info");
-    try {
-      organizationDesign = await client.designOrganizationJson({
-        analysis: run.state.analysis,
-        planningCouncil: planningBookContext(run),
-        planningResearch,
-        orvixMap: lockedOrvixMap ?? orvixMapContext(run)
-      });
-    } catch (error) {
-      appendEvent(
-        run,
-        `Qwen organization design returned an unusable response; retrying compact org design: ${error instanceof Error ? error.message : "Unknown Qwen error"}`,
-        "warning"
-      );
-      organizationDesign = await client.designOrganizationJson({ analysis: run.state.analysis, planningResearch, orvixMap: lockedOrvixMap ?? orvixMapContext(run) });
+    if (run.mode === "solo") {
+      appendEvent(run, "Solo baseline: skipping Strategy Weaver, assigning entire mission to one generalist agent", "info");
+      organizationDesign = createSoloOrganization(run, lockedOrvixMap);
+    } else {
+      appendEvent(run, "Strategy Weaver organization design started with Qwen", "info");
+      try {
+        organizationDesign = await client.designOrganizationJson({
+          analysis: run.state.analysis,
+          planningCouncil: planningBookContext(run),
+          planningResearch,
+          orvixMap: lockedOrvixMap ?? orvixMapContext(run)
+        });
+      } catch (error) {
+        appendEvent(
+          run,
+          `Qwen organization design returned an unusable response; retrying compact org design: ${error instanceof Error ? error.message : "Unknown Qwen error"}`,
+          "warning"
+        );
+        organizationDesign = await client.designOrganizationJson({ analysis: run.state.analysis, planningResearch, orvixMap: lockedOrvixMap ?? orvixMapContext(run) });
+      }
     }
     run.state = applyOrganizationDesign(run.state, organizationDesign);
     writeTaskGraphArtifact(run.store, run.state);
@@ -376,7 +414,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
       content: JSON.stringify(organizationDesign)
     });
     broadcast(run, "state", run.state);
-    appendEvent(run, "Qwen Strategy Weaver returned organization design", "success");
+    appendEvent(run, run.mode === "solo" ? "Solo baseline organization assigned" : "Qwen Strategy Weaver returned organization design", "success");
     recordPlanningStage(run, "organization", "completed", `${organizationDesign.agents.length} agents designed`, Date.now() - stageStartedAt);
   } catch (error) {
     addReasoningArtifact(run, {
@@ -445,12 +483,12 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
 
 export async function chooseInitialScaffold(
   mission: string,
-  mode: "mock" | "qwen",
+  mode: MissionMode,
   analysis: SimulationState["analysis"],
   planningCouncil?: QwenPlanningCouncilDraft | null,
   planningResearch?: PlanningResearchResult | null
 ): Promise<QwenProjectScaffoldDecision | null> {
-  if (mode !== "qwen" || !isQwenConfigured()) return null;
+  if ((mode !== "qwen" && mode !== "solo") || !isQwenConfigured()) return null;
 
   try {
     return await new QwenClient().chooseProjectScaffoldJson({ mission, analysis, planningCouncil, planningResearch });
@@ -461,11 +499,11 @@ export async function chooseInitialScaffold(
 
 export async function draftInitialPlanningCouncil(
   mission: string,
-  mode: "mock" | "qwen",
+  mode: MissionMode,
   analysis: SimulationState["analysis"],
   planningResearch?: PlanningResearchResult | null
 ): Promise<QwenPlanningCouncilDraft | null> {
-  if (mode !== "qwen" || !isQwenConfigured()) return null;
+  if ((mode !== "qwen" && mode !== "solo") || !isQwenConfigured()) return null;
 
   try {
     return await new QwenClient().draftPlanningCouncilJson({ mission, analysis, planningResearch });
@@ -514,10 +552,10 @@ export async function executePlanningResearch(request: QwenPlanningResearchReque
 
 export async function draftInitialPlanningResearch(
   mission: string,
-  mode: "mock" | "qwen",
+  mode: MissionMode,
   analysis: SimulationState["analysis"]
 ): Promise<PlanningResearchResult | null> {
-  if (mode !== "qwen" || !isQwenConfigured()) return null;
+  if ((mode !== "qwen" && mode !== "solo") || !isQwenConfigured()) return null;
 
   const client = new QwenClient();
   try {
@@ -535,7 +573,7 @@ export function normalizeScaffoldType(value: unknown): ProjectScaffoldType | und
   return allowed.includes(value as ProjectScaffoldType) ? value as ProjectScaffoldType : undefined;
 }
 
-export function createRun(mission: string, mode: "mock" | "qwen") {
+export function createRun(mission: string, mode: MissionMode) {
   const initial = createInitialSimulation(mission);
   const store = createRunStore(initial.analysis.id, projectRoot);
   const run: MissionRun = {
@@ -549,6 +587,7 @@ export function createRun(mission: string, mode: "mock" | "qwen") {
     workspace: undefined,
     planningStages: [],
     subscribers: new Set(),
+    metrics: createRunMetrics(),
     progressTimer: setInterval(() => {
       if (run.state.isComplete) {
         clearInterval(run.progressTimer);
@@ -580,8 +619,8 @@ export function createRun(mission: string, mode: "mock" | "qwen") {
   writeStateSnapshot(store, run.state, run.reasoningArtifacts);
   runs.set(run.id, run);
 
-  if (mode === "qwen" && isQwenConfigured()) {
-    void runPlanningPipeline(run).catch((error) => {
+  if (usesQwenReasoning(run) && isQwenConfigured()) {
+    void withQwenUsageRun(run.id, () => runPlanningPipeline(run)).catch((error) => {
       appendEvent(run, `Planning pipeline crashed: ${error instanceof Error ? error.message : "Unknown error"}`, "warning");
     });
     return run;
@@ -594,7 +633,7 @@ export function createRun(mission: string, mode: "mock" | "qwen") {
     root: workspaceRoot
   });
   recordProjectBootstrap(run, null);
-  if (mode === "qwen") {
+  if (mode === "qwen" || mode === "solo") {
     appendEvent(run, "Qwen reasoning skipped: DASHSCOPE_API_KEY is missing", "warning");
     scheduleOrchestratorStep(run);
   } else {

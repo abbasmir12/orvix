@@ -15,6 +15,7 @@
     "api": "npm run dev --workspace @orvix/api",
     "dev": "npm run dev --workspace @orvix/cli",
     "mission": "npm run mission --workspace @orvix/cli",
-    "start:api": "npm run start --workspace @orvix/api"
+    "start:api": "npm run start --workspace @orvix/api",
+    "benchmark": "node scripts/benchmark.mjs"
   }
 }
