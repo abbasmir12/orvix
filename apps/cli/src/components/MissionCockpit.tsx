@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { progressBar, statusSymbol } from "../lib/progress.js";
 import { theme, glyphs } from "../lib/theme.js";
+import { bottomWindow, scrollbarGlyph } from "../lib/scroll.js";
 import type { Agent, AgentCall, AgentCallStatus, AgentTurnEvent, PullRequest, ReasoningArtifact, RunMetricsSummary, SimulationState, TimelineEvent } from "../types.js";
 
 export type CockpitPanel = "focus" | "agents" | "activity" | "input";
@@ -121,25 +122,6 @@ type BootstrapArtifact = {
   scaffold: Record<string, unknown>;
 };
 
-function bottomWindow<T>(items: T[], visibleRows: number, scrollOffset: number) {
-  const rows = Math.max(1, visibleRows);
-  const maxStart = Math.max(0, items.length - rows);
-  const start = Math.max(0, maxStart - Math.max(0, scrollOffset));
-  return {
-    visible: items.slice(start, start + rows),
-    start,
-    total: items.length,
-    maxOffset: maxStart
-  };
-}
-
-function scrollbarGlyph(row: number, rows: number, total: number, start: number) {
-  if (total <= rows) return " ";
-  const maxStart = Math.max(1, total - rows);
-  const thumbSize = Math.max(1, Math.floor((rows / total) * rows));
-  const thumbTop = Math.round((start / maxStart) * Math.max(0, rows - thumbSize));
-  return row >= thumbTop && row < thumbTop + thumbSize ? "█" : "│";
-}
 
 const callSymbol = (status: AgentCallStatus) => {
   if (status === "returned") return "✓";

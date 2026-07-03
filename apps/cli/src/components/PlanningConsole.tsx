@@ -1,7 +1,8 @@
-import React from "react";
-import { Box, Text, useStdout } from "ink";
+import React, { useEffect, useRef, useState } from "react";
+import { Box, Text, useInput, useStdin, useStdout } from "ink";
 import { progressBar } from "../lib/progress.js";
 import { theme, glyphs } from "../lib/theme.js";
+import { bottomWindow, scrollbarGlyph, hitTestRegions, parseMouseEvents, type Rect } from "../lib/scroll.js";
 import type { PlanningStageEvent, PlanningStageId, ReasoningArtifact, SimulationState } from "../types.js";
 
 type PlanningConsoleProps = {
@@ -75,6 +76,28 @@ const wrapText = (value: string, width: number) => {
   return lines.length ? lines : [""];
 };
 
+type Line = { id: string; node: React.ReactNode };
+
+function wrappedLines(id: string, value: string, width: number, color?: string): Line[] {
+  return wrapText(value, width).map((line, index) => ({
+    id: `${id}-${index}`,
+    node: <Text color={color}>{line}</Text>
+  }));
+}
+
+function labeledWrappedLines(id: string, label: string, value: string, width: number, labelColor: string = theme.muted, textColor?: string): Line[] {
+  const wrapped = wrapText(value, Math.max(8, width - label.length));
+  return wrapped.map((line, index) => ({
+    id: `${id}-${index}`,
+    node: (
+      <Text>
+        {index === 0 ? <Text color={labelColor}>{label}</Text> : <Text>{" ".repeat(label.length)}</Text>}
+        <Text color={textColor}>{line}</Text>
+      </Text>
+    )
+  }));
+}
+
 function WrappedText({ value, width, color }: { value: string; width: number; color?: string }) {
   return (
     <Box flexDirection="column">
@@ -126,10 +149,6 @@ function handoffLabel(index: number) {
   return "Critic → Release";
 }
 
-function latestArtifact(artifacts: ReasoningArtifact[]) {
-  return artifacts[artifacts.length - 1];
-}
-
 function artifactByKind(artifacts: ReasoningArtifact[], kind: ReasoningArtifact["kind"]) {
   return [...artifacts].reverse().find((artifact) => artifact.kind === kind);
 }
@@ -176,8 +195,8 @@ function researchEvents(artifacts: ReasoningArtifact[]) {
       const request = planningResearch.request && typeof planningResearch.request === "object"
         ? planningResearch.request as Record<string, unknown>
         : {};
-      for (const query of stringArray(request.queries).slice(0, 4)) {
-        events.push(`planning_search: ${query}`);
+      for (const query of stringArray(request.queries)) {
+        events.push(`research: ${query}`);
       }
       continue;
     }
@@ -192,7 +211,7 @@ function researchEvents(artifacts: ReasoningArtifact[]) {
       if (call.tool === "fetch_url") events.push(`fetch_url: ${String(call.url ?? output.url ?? "url")}`);
     }
   }
-  return events.slice(-4);
+  return events;
 }
 
 function summarizeArtifact(artifact?: ReasoningArtifact) {
@@ -242,38 +261,12 @@ function summarizeArtifact(artifact?: ReasoningArtifact) {
 }
 
 function planningBookEntries(state: SimulationState) {
-  return state.bookEntries
-    .filter((entry) =>
-      entry.scope === "mission" &&
-      (/planner|mastermind|strategy|architecture|runtime|delivery|bootstrap/i.test(entry.fromAgentId) ||
-        entry.topics.some((topic) => /planning|mission|stack|acceptance|bootstrap|scaffold|research|search/i.test(topic)))
-    )
-    .slice(-6);
+  return state.bookEntries.filter((entry) =>
+    entry.scope === "mission" &&
+    (/planner|mastermind|strategy|architecture|runtime|delivery|bootstrap/i.test(entry.fromAgentId) ||
+      entry.topics.some((topic) => /planning|mission|stack|acceptance|bootstrap|scaffold|research|search/i.test(topic)))
+  );
 }
-
-function plannerTraceLines(artifacts: ReasoningArtifact[], events: SimulationState["events"]) {
-  const lines: string[] = [];
-  for (const artifact of artifacts.slice(-6)) {
-    const summary = summarizeArtifact(artifact);
-    lines.push(`${artifact.kind}: ${summary}`);
-    if (artifact.reasoningContent) {
-      lines.push(`reasoning: ${artifact.reasoningContent.replace(/\s+/g, " ").slice(0, 180)}`);
-    }
-  }
-
-  if (lines.length === 0) {
-    lines.push(...events.slice(-4).map((event) => event.message));
-  }
-
-  return lines.slice(-6);
-}
-
-type BroadcastEntry = {
-  id: string;
-  agent: string;
-  message: string;
-  color: string;
-};
 
 function shortAgentName(value: string) {
   return value
@@ -282,6 +275,13 @@ function shortAgentName(value: string) {
     .replace(/\s+/g, " ")
     .trim() || value;
 }
+
+type BroadcastEntry = {
+  id: string;
+  agent: string;
+  message: string;
+  color: string;
+};
 
 function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]): BroadcastEntry[] {
   const entries: BroadcastEntry[] = [];
@@ -327,7 +327,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
     }
   }
 
-  for (const entry of state.bookEntries.filter((candidate) => candidate.scope === "mission").slice(-12)) {
+  for (const entry of state.bookEntries.filter((candidate) => candidate.scope === "mission")) {
     entries.push({
       id: entry.id,
       agent: shortAgentName(entry.fromAgentId),
@@ -336,7 +336,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
     });
   }
 
-  for (const event of state.events.slice(-10)) {
+  for (const event of state.events) {
     entries.push({
       id: event.id,
       agent: event.message.includes("Blueprint") || event.message.includes("Orvix Map")
@@ -353,7 +353,7 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
     });
   }
 
-  for (const agent of state.agents.filter((candidate) => candidate.status === "active" || candidate.status === "blocked").slice(-8)) {
+  for (const agent of state.agents.filter((candidate) => candidate.status === "active" || candidate.status === "blocked")) {
     entries.push({
       id: `${agent.id}-${agent.progress}`,
       agent: agent.name,
@@ -362,31 +362,196 @@ function broadcastEntries(state: SimulationState, artifacts: ReasoningArtifact[]
     });
   }
 
-  return entries.slice(-18);
+  return entries;
 }
 
-function AgentBadge({ label, color }: { label: string; color: string }) {
+function AgentBadge({ label, color, width }: { label: string; color: string; width: number }) {
   return (
     <Text color={color} bold>
-      {fit(`[${shortAgentName(label)}]`, 18)}
+      {fit(`${glyphs.dot} ${shortAgentName(label)}`, width)}
     </Text>
   );
 }
 
-function PromptPreview({ agent, width }: { agent: Record<string, unknown> | undefined; width: number }) {
+function broadcastLines(entries: BroadcastEntry[], width: number): Line[] {
+  if (entries.length === 0) {
+    return [{
+      id: "broadcast-empty",
+      node: <Text color={theme.muted}>Waiting for planner agents to publish analysis, Orvix Map, and organization signals.</Text>
+    }];
+  }
+
+  return entries.flatMap((entry) => {
+    const badgeWidth = Math.min(20, Math.floor(width * 0.3));
+    const messageWidth = Math.max(16, width - badgeWidth - 1);
+    const wrapped = wrapText(entry.message, messageWidth);
+    return wrapped.map((line, index) => ({
+      id: `${entry.id}-${index}`,
+      node: (
+        <Text>
+          {index === 0 ? <AgentBadge label={entry.agent} color={entry.color} width={badgeWidth} /> : <Text>{" ".repeat(badgeWidth)}</Text>}
+          <Text> </Text>
+          <Text color={entry.color === theme.accent ? theme.text : entry.color}>{line}</Text>
+        </Text>
+      )
+    }));
+  });
+}
+
+type BookLine = { id: string; kind: string; from: string; message: string; color: string };
+
+function bookAndResearchLines(state: SimulationState, artifacts: ReasoningArtifact[]): BookLine[] {
+  const lines: BookLine[] = planningBookEntries(state).map((entry) => ({
+    id: entry.id,
+    kind: entry.type,
+    from: shortAgentName(entry.fromAgentId),
+    message: entry.message,
+    color: entry.type === "question" ? theme.warning : entry.type === "contract" || entry.type === "decision" ? theme.success : theme.cloud
+  }));
+
+  for (const [index, item] of researchEvents(artifacts).entries()) {
+    const [kind, ...rest] = item.split(": ");
+    lines.push({
+      id: `research-${index}`,
+      kind: kind ?? "research",
+      from: "Research Scout",
+      message: rest.join(": "),
+      color: theme.success
+    });
+  }
+
+  return lines;
+}
+
+function bookLines(entries: BookLine[], width: number): Line[] {
+  if (entries.length === 0) {
+    return [{
+      id: "book-empty",
+      node: <Text color={theme.muted}>Waiting for planning agents to publish mission, stack, and acceptance notes into Orvix Book.</Text>
+    }];
+  }
+
+  return entries.flatMap((entry) =>
+    labeledWrappedLines(entry.id, `${fit(entry.kind, 10)}`, `${entry.from}: ${entry.message}`, width, entry.color, entry.color === theme.muted ? undefined : theme.text)
+  );
+}
+
+function traceEntries(artifacts: ReasoningArtifact[]) {
+  const entries: Array<{ id: string; label: string; body: string; color: string }> = [];
+  for (const artifact of artifacts) {
+    entries.push({
+      id: artifact.id,
+      label: artifactLabels[artifact.kind] ?? artifact.kind,
+      body: summarizeArtifact(artifact),
+      color: artifact.status === "failed" ? theme.warning : theme.cloud
+    });
+    if (artifact.reasoningContent) {
+      entries.push({
+        id: `${artifact.id}-reasoning`,
+        label: "reasoning",
+        body: artifact.reasoningContent.replace(/\s+/g, " ").slice(0, 260),
+        color: theme.warning
+      });
+    }
+  }
+  return entries;
+}
+
+function traceLines(entries: ReturnType<typeof traceEntries>, width: number): Line[] {
+  if (entries.length === 0) {
+    return [{ id: "trace-empty", node: <Text color={theme.muted}>Waiting for planner reasoning traces.</Text> }];
+  }
+  return entries.flatMap((entry) => labeledWrappedLines(entry.id, `${fit(entry.label, 20)} `, entry.body, width, theme.muted, entry.color));
+}
+
+function promptPreviewText(agent: Record<string, unknown> | undefined) {
   const name = String(agent?.name ?? "Specialist Agent");
   const goal = String(agent?.goal ?? "Own the assigned delivery packet.");
   const tools = stringArray(agent?.tools).slice(0, 5);
   const acceptance = stringArray(agent?.acceptanceCriteria).slice(0, 2);
-  const contract = [
+  return [
     `You are ${name}.`,
     `Goal: ${goal}`,
     `Tools: ${tools.length ? tools.join(", ") : "workspace tools assigned by MasterMind"}.`,
     `Acceptance: ${acceptance.length ? acceptance.join("; ") : "produce reviewable code and PR evidence"}.`,
     "Coordinate through Orvix Book, continue with explicit assumptions, update visible product surfaces, then open a PR."
   ].join(" ");
+}
 
-  return <WrappedText value={contract} width={width} color={theme.muted} />;
+type PanelId = "broadcast" | "book" | "trace";
+const panelIds: PanelId[] = ["broadcast", "book", "trace"];
+const panelTitles: Record<PanelId, string> = {
+  broadcast: "Planner Broadcast",
+  book: "Orvix Book & Research",
+  trace: "Planner Trace & Prompt"
+};
+
+/** Fixed-row-count scrollable feed: exactly `rows` slots every frame (never grows/shrinks the box), bottom-anchored, with a scrollbar when content overflows. */
+function ScrollFeed({
+  lines,
+  rows,
+  scrollOffset,
+  width,
+  focused,
+  interactive
+}: {
+  lines: Line[];
+  rows: number;
+  scrollOffset: number;
+  width: number;
+  focused: boolean;
+  interactive: boolean;
+}) {
+  const windowed = bottomWindow(lines, rows, scrollOffset);
+  const lineWidth = Math.max(10, width - (interactive ? 2 : 0));
+
+  return (
+    <Box flexDirection="column">
+      {Array.from({ length: rows }).map((_, index) => {
+        const line = windowed.visible[index];
+        return (
+          <Box key={line?.id ?? `empty-${index}`}>
+            <Box width={lineWidth}>{line?.node ?? <Text> </Text>}</Box>
+            {interactive ? (
+              <Box width={1}>
+                <Text color={focused ? theme.accent : theme.faint}>{scrollbarGlyph(index, rows, windowed.total, windowed.start)}</Text>
+              </Box>
+            ) : null}
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+function PanelFrame({
+  title,
+  width,
+  focused,
+  hint,
+  children
+}: {
+  title: string;
+  width: number;
+  focused: boolean;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  const innerWidth = Math.max(16, width - 4);
+  const hintWidth = hint ? Math.min(hint.length, Math.floor(innerWidth * 0.4)) : 0;
+  const titleWidth = Math.max(8, innerWidth - (hintWidth ? hintWidth + 1 : 0));
+
+  return (
+    <Box width={width} flexDirection="column" borderStyle="round" borderColor={focused ? theme.accent : theme.border} paddingX={1} paddingY={1}>
+      <Box justifyContent="space-between">
+        <Text color={focused ? theme.accent : theme.muted} bold>{fit(`${focused ? `${glyphs.ring} ` : ""}${title}`, titleWidth)}</Text>
+        {hint ? <Text color={theme.faint}>{fit(hint, hintWidth)}</Text> : null}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {children}
+      </Box>
+    </Box>
+  );
 }
 
 export function PlanningConsole({
@@ -398,16 +563,66 @@ export function PlanningConsole({
   planningStages
 }: PlanningConsoleProps) {
   const { stdout } = useStdout();
+  const { stdin, isRawModeSupported } = useStdin();
   const width = Math.max(72, stdout.columns ?? 80);
-  const leftWidth = Math.floor(width * 0.52);
-  const rightWidth = width - leftWidth;
+  const termRows = stdout.rows ?? 34;
+  const compact = termRows < 30;
+
+  const [scroll, setScroll] = useState<Record<PanelId, number>>({ broadcast: 0, book: 0, trace: 0 });
+  const [focus, setFocus] = useState<PanelId>("broadcast");
+  const regionsRef = useRef<Partial<Record<PanelId, Rect>>>({});
+
+  const FEED_ROWS = compact ? 7 : 11;
+
+  function scrollPanel(panel: PanelId, delta: number) {
+    setScroll((current) => ({ ...current, [panel]: Math.max(0, (current[panel] ?? 0) + delta) }));
+  }
+
+  useInput((input, key) => {
+    if (key.tab) {
+      setFocus((current) => panelIds[(panelIds.indexOf(current) + 1) % panelIds.length]);
+      return;
+    }
+    if (key.upArrow) scrollPanel(focus, 1);
+    if (key.downArrow) scrollPanel(focus, -1);
+    if (key.pageUp) scrollPanel(focus, FEED_ROWS);
+    if (key.pageDown) scrollPanel(focus, -FEED_ROWS);
+  });
+
+  useEffect(() => {
+    // Raw mode itself is already owned by the useInput() hook above (Ink
+    // ref-counts it); this effect only toggles mouse reporting modes.
+    if (!stdin || !isRawModeSupported) return;
+    process.stdout.write("[?1000h[?1003h[?1006h");
+
+    const onData = (chunk: Buffer | string) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk;
+      for (const event of parseMouseEvents(text)) {
+        const hit = hitTestRegions(event.x, event.y, regionsRef.current);
+        if (!hit) continue;
+        if (event.kind === "move") {
+          setFocus((current) => (current === hit ? current : hit));
+        } else {
+          setFocus(hit);
+          scrollPanel(hit, event.delta);
+        }
+      }
+    };
+
+    stdin.on("data", onData);
+    return () => {
+      stdin.off("data", onData);
+      process.stdout.write("[?1000l[?1003l[?1006l");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stdin, isRawModeSupported]);
+
   const latestEvent = state.events[state.events.length - 1];
   const missionAnalysis = parseArtifact(artifactByKind(reasoningArtifacts, "mission_analysis"));
   const organizationDesign = parseArtifact(artifactByKind(reasoningArtifacts, "organization_design"));
   const bootstrap = bootstrapPayload(reasoningArtifacts);
   const designedAgents = objectArray(organizationDesign?.agents);
   const featuredAgent = designedAgents.find((agent) => !String(agent.name ?? "").toLowerCase().includes("mastermind")) ?? designedAgents[0];
-  const research = researchEvents(reasoningArtifacts);
   const planningEvents = state.events.filter((event) =>
     /planning|qwen|mastermind|strategy|critic|release|scaffold|autopilot/i.test(event.message)
   );
@@ -420,24 +635,51 @@ export function PlanningConsole({
       ? Math.round((completedStages / planningStageOrder.length) * 100)
       : Math.min(96, reasoningArtifacts.length * 22 + planningEvents.length * 8 + (latestEvent ? 8 : 0))
     : 18;
-  const latest = latestArtifact(reasoningArtifacts);
-  const rows = stdout.rows ?? 34;
-  const compact = rows < 30;
   const missionPanelWidth = Math.floor(width * 0.38);
   const orgPanelWidth = Math.floor(width * 0.34);
   const railWidth = width - missionPanelWidth - orgPanelWidth;
   const innerMissionWidth = Math.max(24, missionPanelWidth - 4);
-  const innerOrgWidth = Math.max(24, orgPanelWidth - 4);
   const innerRailWidth = Math.max(20, railWidth - 4);
+  const innerOrgWidth = Math.max(24, orgPanelWidth - 4);
   const featureList = stringArray(missionAnalysis?.features ?? state.analysis.features).slice(0, compact ? 3 : 5);
   const riskList = stringArray(missionAnalysis?.risks ?? state.analysis.risks).slice(0, compact ? 2 : 3);
-  const visibleAgents: Record<string, unknown>[] = designedAgents.length > 0
-    ? designedAgents.slice(0, compact ? 4 : 6)
-    : state.agents.slice(0, compact ? 4 : 6).map((agent) => ({ name: agent.name, role: agent.role, goal: agent.currentActivity }));
   const visibleTasks = state.tasks.slice(0, compact ? 4 : 6);
-  const bookEntries = planningBookEntries(state);
-  const plannerTrace = plannerTraceLines(reasoningArtifacts, state.events);
-  const broadcasts = broadcastEntries(state, reasoningArtifacts);
+  const leftWidth = Math.floor(width * 0.52);
+  const rightWidth = width - leftWidth;
+
+  const broadcasts = broadcastLines(broadcastEntries(state, reasoningArtifacts), innerOrgWidth);
+  const bookFeed = bookLines(bookAndResearchLines(state, reasoningArtifacts), Math.max(24, leftWidth - 5));
+  const traceFeed = traceLines(traceEntries(reasoningArtifacts), Math.max(24, rightWidth - 5));
+  const promptText = promptPreviewText(featuredAgent);
+  const traceAndPrompt: Line[] = [
+    ...traceFeed,
+    { id: "prompt-divider", node: <Text color={theme.faint}>{"─".repeat(Math.max(10, rightWidth - 6))}</Text> },
+    { id: "prompt-title", node: <Text color={theme.accent} bold>{glyphs.dot} Sample agent system prompt</Text> },
+    ...wrappedLines("prompt-body", promptText, Math.max(24, rightWidth - 5), theme.muted),
+    { id: "signal-divider", node: <Text color={theme.faint}>{"─".repeat(Math.max(10, rightWidth - 6))}</Text> },
+    ...labeledWrappedLines("latest-signal", "Latest: ", latestEvent?.message ?? "No planner signal yet.", Math.max(24, rightWidth - 5), theme.muted, theme.text)
+  ];
+
+  // Header + row heights are computed here (not just guessed at render time)
+  // so the hover hit-test regions below stay exactly in sync with what's
+  // actually drawn — alt-screen mode (enabled once at app start) guarantees
+  // mouse (x, y) are absolute coordinates matching this same numbering.
+  const headerContentLines = mode === "cloud" ? 2 : 1;
+  const headerHeight = headerContentLines + 2;
+  const row1Y0 = headerHeight + 2;
+  const row1BoxRows = FEED_ROWS + 2;
+  const row1Height = row1BoxRows + 4;
+  const row1Y1 = row1Y0 + row1Height - 1;
+  const row2Y0 = row1Y1 + 2;
+  const row2BoxRows = FEED_ROWS + 2;
+  const row2Height = row2BoxRows + 4;
+  const row2Y1 = row2Y0 + row2Height - 1;
+
+  regionsRef.current = {
+    broadcast: { x0: missionPanelWidth + 1, y0: row1Y0, x1: missionPanelWidth + orgPanelWidth, y1: row1Y1 },
+    book: { x0: 1, y0: row2Y0, x1: leftWidth, y1: row2Y1 },
+    trace: { x0: leftWidth + 1, y0: row2Y0, x1: width, y1: row2Y1 }
+  };
 
   return (
     <Box flexDirection="column" width={width}>
@@ -475,55 +717,22 @@ export function PlanningConsole({
           <Box marginTop={1} flexDirection="column">
             <Text color={theme.muted}>Features</Text>
             {featureList.map((feature, index) => (
-              <Text key={`feature-${index}`} color={theme.success}>✓ {fit(feature, Math.max(12, innerMissionWidth - 2))}</Text>
+              <Text key={`feature-${index}`} color={theme.success}>{glyphs.done} {fit(feature, Math.max(12, innerMissionWidth - 2))}</Text>
             ))}
           </Box>
           {!compact ? (
             <Box marginTop={1} flexDirection="column">
               <Text color={theme.muted}>Risks MasterMind is watching</Text>
               {riskList.map((risk, index) => (
-                <WrappedText key={`risk-${index}`} value={`! ${risk}`} width={innerMissionWidth} color={theme.warning} />
+                <WrappedText key={`risk-${index}`} value={`${glyphs.degraded} ${risk}`} width={innerMissionWidth} color={theme.warning} />
               ))}
             </Box>
           ) : null}
         </Box>
 
-        <Box width={orgPanelWidth} flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1}>
-          <Text color={theme.accent} bold>Organization Forge</Text>
-          <Box marginTop={1} flexDirection="column">
-            <Box justifyContent="space-between">
-              <Text color={theme.muted}>Planner Broadcast</Text>
-              <Text color={theme.muted}>{broadcasts.length} live</Text>
-            </Box>
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            {(broadcasts.length > 0 ? broadcasts.slice(-(compact ? 7 : 11)) : [{
-              id: "waiting",
-              agent: "MasterMind",
-              message: "Waiting for planner agents to publish analysis, Orvix Map, and organization signals.",
-              color: theme.muted
-            }]).map((entry) => {
-              const messageWidth = Math.max(12, innerOrgWidth - 19);
-              return (
-                <Box key={entry.id} flexDirection="column" marginBottom={1}>
-                  <Box>
-                    <AgentBadge label={entry.agent} color={entry.color} />
-                    <WrappedText value={entry.message} width={messageWidth} color={entry.color === theme.accent ? theme.text : entry.color} />
-                  </Box>
-                </Box>
-              );
-            })}
-          </Box>
-          {!compact ? (
-            <Box marginTop={1} flexDirection="column">
-              <Text color={theme.muted}>Company shape</Text>
-              <WrappedText
-                value={String(organizationDesign?.organizationName ?? "Blueprint Forge, Strategy Weaver, and MasterMind are forming the project-specific agent company.")}
-                width={innerOrgWidth}
-              />
-            </Box>
-          ) : null}
-        </Box>
+        <PanelFrame title={panelTitles.broadcast} width={orgPanelWidth} focused={focus === "broadcast"} hint={`${broadcasts.length} live`}>
+          <ScrollFeed lines={broadcasts} rows={row1BoxRows} scrollOffset={scroll.broadcast} width={innerOrgWidth} focused={focus === "broadcast"} interactive />
+        </PanelFrame>
 
         <Box width={railWidth} flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1}>
           <Text color={theme.accent} bold>Launch Rail</Text>
@@ -574,68 +783,21 @@ export function PlanningConsole({
       </Box>
 
       <Box width={width} marginTop={1}>
-        <Box width={leftWidth} borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1} flexDirection="column">
-          <Box justifyContent="space-between">
-            <Text color={theme.accent} bold>Planner Book & Scaffold</Text>
-            <Text color={theme.muted}>{reasoningArtifacts.length} artifacts · {bookEntries.length} book</Text>
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Project bootstrap</Text>
-            <WrappedText
-              value={bootstrap
-                ? `${String(bootstrap.label ?? bootstrap.type ?? "Project scaffold")} · ${String(bootstrap.rationale ?? "selected by MasterMind")}`
-                : "Waiting for MasterMind to select and document the runnable project scaffold."}
-              width={Math.max(24, leftWidth - 4)}
-            />
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Orvix Book kickoff</Text>
-            {(bookEntries.length > 0 ? bookEntries : []).map((entry) => (
-              <WrappedText
-                key={entry.id}
-                value={`${entry.fromAgentId}: ${entry.message}`}
-                width={Math.max(24, leftWidth - 4)}
-                color={entry.priority === "urgent" || entry.priority === "high" ? theme.warning : theme.muted}
-              />
-            ))}
-            {bookEntries.length === 0 ? (
-              <WrappedText value="Waiting for planning agents to publish mission, stack, and acceptance notes into Orvix Book." width={Math.max(24, leftWidth - 4)} color={theme.muted} />
-            ) : null}
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Research lane</Text>
-            {(research.length > 0 ? research : ["research_web and fetch_url are armed for agents when docs, current practices, or inspiration are needed."]).map((item, index) => (
-              <WrappedText key={`research-${index}`} value={item} width={Math.max(24, leftWidth - 4)} color={research.length > 0 ? theme.success : theme.muted} />
-            ))}
-          </Box>
-        </Box>
+        <PanelFrame title={panelTitles.book} width={leftWidth} focused={focus === "book"} hint={String(bootstrap ? bootstrap.label ?? bootstrap.type ?? "scaffold set" : "scaffold pending")}>
+          <ScrollFeed lines={bookFeed} rows={row2BoxRows} scrollOffset={scroll.book} width={Math.max(24, leftWidth - 5)} focused={focus === "book"} interactive />
+        </PanelFrame>
 
-        <Box width={rightWidth} borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1} flexDirection="column">
-          <Text color={theme.accent} bold>Planner Trace & Prompt</Text>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>What planners are doing</Text>
-            {plannerTrace.map((line, index) => (
-              <WrappedText key={`planner-trace-${index}`} value={line} width={Math.max(24, rightWidth - 4)} color={line.startsWith("reasoning:") ? theme.warning : theme.muted} />
-            ))}
-          </Box>
-          <Box marginTop={1}>
-            <PromptPreview agent={featuredAgent} width={Math.max(24, rightWidth - 4)} />
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Latest signal</Text>
-            <WrappedText value={latestEvent?.message ?? summarizeArtifact(latest)} width={Math.max(24, rightWidth - 4)} color={latest?.status === "failed" ? theme.warning : theme.muted} />
-          </Box>
-        </Box>
+        <PanelFrame title={panelTitles.trace} width={rightWidth} focused={focus === "trace"} hint={`${reasoningArtifacts.length} artifacts`}>
+          <ScrollFeed lines={traceAndPrompt} rows={row2BoxRows} scrollOffset={scroll.trace} width={Math.max(24, rightWidth - 5)} focused={focus === "trace"} interactive />
+        </PanelFrame>
       </Box>
 
       <Box borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={1}>
-        <Text color={theme.accent}>› </Text>
+        <Text color={theme.accent}>{glyphs.chevron} </Text>
         <Text color={theme.muted}>
           {fit(
-            mode === "cloud"
-              ? "autopilot starts automatically · planner broadcast auto-scrolls latest · Tab/scroll in mission cockpit · q quit"
-              : "q quit · MasterMind briefing · Strategy forge · task graph · prompt contracts · research lane",
-            Math.max(24, width - 4)
+            `Tab focus panel · hover + wheel or ↑/↓ scroll · PageUp/PageDown jump · focused: ${panelTitles[focus]} · q quit`,
+            Math.max(20, width - 6)
           )}
         </Text>
       </Box>
