@@ -1248,10 +1248,11 @@ export class QwenClient {
           "You are Orvix Strategy Weaver, called by MasterMind to design the project-specific engineering organization.",
           "Create agents with clear ownership boundaries, not vague helpers.",
           "Each agent must know its owned domain, likely collaboration partners, acceptance criteria, and tool permissions.",
-          "Prefer parallelizable workstreams. Dependencies should be treated as coordination contracts through Orvix Book, not hard waiting unless absolutely required.",
           "Treat planning council entries as company memory. Preserve their domain, stack, and acceptance decisions in the team design.",
           "Treat the Orvix Map as the locked source of truth for surfaces, systems, contracts, work packets, and acceptance gates.",
-          "Create as many useful specialist agents as the project actually needs, from 5 up to 20. Do not hesitate to create 10, 12, 16, or 20 agents when that makes ownership clearer. Do not create filler agents.",
+          "Size the team to the mission, not to a target headcount: count how many genuinely independent, parallelizable workstreams this mission actually decomposes into, and create exactly one specialist agent per real workstream. A trivial single-surface mission may need only 1-2 agents; a large multi-surface mission may need many. Never pad the roster with filler agents to look thorough.",
+          "Prefer vertical-slice ownership over horizontal layering: one agent should own a complete feature/surface end-to-end (its data, logic, and UI together) rather than splitting one small feature across a backend agent, a frontend agent, and a styling agent. Vertical slices are what actually let agents run in true parallel; horizontal layering creates artificial sequential chains.",
+          "dependsOnAgentIds is a REAL, ENFORCED scheduling gate, not a coordination hint: an agent listed in another agent's dependsOnAgentIds will not start until every agent it depends on has fully merged its work. Leave dependsOnAgentIds empty for every agent whose work is genuinely independent — those agents start immediately, all at once, in true parallel. Only declare a dependency when an agent truly cannot do meaningful work without another agent's merged output already existing — the clearest example is a QA/test/accessibility/integration reviewer agent that needs real implementation to inspect, so it should depend on the implementation agents it reviews. Do not add a dependency for mere coordination or convenience — use Orvix Book contracts for that instead. Minimize dependencies: every dependency you add delays that agent's start and reduces real parallelism.",
           "Return valid compact JSON only. No markdown."
         ].join(" ")
       },
@@ -1265,6 +1266,8 @@ export class QwenClient {
           orvixMap: input.orvixMap,
           outputSchema: {
             organizationName: "short organization name",
+            parallelizableWorkstreams: ["one entry per genuinely independent workstream you identified in the mission/map"],
+            recommendedAgentCount: "integer; must equal the number of worker agents below, justified by parallelizableWorkstreams",
             agents: [
               {
                 id: "stable-kebab-case-id",
@@ -1273,16 +1276,16 @@ export class QwenClient {
                 goal: "concrete deliverable owned by this agent",
                 tools: ["allowed tool names"],
                 acceptanceCriteria: ["reviewable criteria"],
-                dependencies: ["agent or task ids for coordination only; do not overuse"]
+                dependsOnAgentIds: ["ids of agents this agent's work truly cannot start without; empty for independent work"]
               }
             ]
           },
           designRules: [
             "Create one MasterMind-equivalent only if needed; otherwise workers report to Orvix MasterMind.",
-            "Make worker agents parallelizable.",
-            "Use dependencies sparingly; prefer Orvix Book contracts.",
-            "Reviewer/validator agents should not own implementation files.",
-            "Implementation agents should produce code, schemas, tests, UI, or config evidence."
+            "Every agent with an empty dependsOnAgentIds runs immediately, in parallel, alongside every other independent agent.",
+            "Reviewer/validator/QA agents should declare dependsOnAgentIds on the implementation agents they need to inspect; they should not own implementation files themselves.",
+            "Implementation agents should produce code, schemas, tests, UI, or config evidence.",
+            "Justify recommendedAgentCount and dependsOnAgentIds against parallelizableWorkstreams — do not invent dependencies or extra agents beyond what the real workstream count supports."
           ]
         })
       }

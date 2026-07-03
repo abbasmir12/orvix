@@ -155,7 +155,7 @@ export function createInitialSimulation(mission: string): SimulationState {
       title: "Create project architecture blueprint",
       ownerAgentId: "architect-agent",
       branch: "blueprint/project-architecture",
-      dependencies: [],
+      dependsOnAgentIds: [],
       filesLikelyAffected: ["docs/architecture.md", "docs/task-graph.json"],
       acceptanceCriteria: ["Tech stack selected", "Modules identified", "Review checkpoints defined"],
       status: "active"
@@ -165,7 +165,7 @@ export function createInitialSimulation(mission: string): SimulationState {
       title: workPlan.primary.title,
       ownerAgentId: "backend-manager",
       branch: workPlan.primary.branch,
-      dependencies: ["task-database-001"],
+      dependsOnAgentIds: ["backend-manager"],
       filesLikelyAffected: workPlan.primary.files,
       acceptanceCriteria: workPlan.primary.criteria,
       status: "queued"
@@ -175,7 +175,7 @@ export function createInitialSimulation(mission: string): SimulationState {
       title: workPlan.experience.title,
       ownerAgentId: "frontend-manager",
       branch: workPlan.experience.branch,
-      dependencies: ["task-architecture-001"],
+      dependsOnAgentIds: ["architect-agent"],
       filesLikelyAffected: workPlan.experience.files,
       acceptanceCriteria: workPlan.experience.criteria,
       status: "queued"
@@ -185,7 +185,7 @@ export function createInitialSimulation(mission: string): SimulationState {
       title: workPlan.service.title,
       ownerAgentId: "backend-manager",
       branch: workPlan.service.branch,
-      dependencies: ["task-database-001"],
+      dependsOnAgentIds: ["backend-manager"],
       filesLikelyAffected: workPlan.service.files,
       acceptanceCriteria: workPlan.service.criteria,
       status: "queued"
@@ -195,7 +195,7 @@ export function createInitialSimulation(mission: string): SimulationState {
       title: workPlan.foundation.title,
       ownerAgentId: "backend-manager",
       branch: workPlan.foundation.branch,
-      dependencies: ["task-architecture-001"],
+      dependsOnAgentIds: ["architect-agent"],
       filesLikelyAffected: workPlan.foundation.files,
       acceptanceCriteria: workPlan.foundation.criteria,
       status: "queued"
@@ -283,7 +283,8 @@ export function createInitialSimulation(mission: string): SimulationState {
     bookEntries: [],
     agentSignals: [],
     ownershipIndex: createOwnershipIndex(agents, tasks),
-    isComplete: false
+    isComplete: false,
+    startedAt: Date.now()
   };
 }
 

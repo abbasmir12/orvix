@@ -32,7 +32,8 @@ export type Task = {
   title: string;
   ownerAgentId: string;
   branch: string;
-  dependencies: string[];
+  /** Agent ids this task's owner genuinely cannot start without — real scheduling gate, not advisory. Empty for independent work. */
+  dependsOnAgentIds: string[];
   filesLikelyAffected: string[];
   acceptanceCriteria: string[];
   status: AgentStatus;
@@ -88,11 +89,15 @@ export type OrganizationAgentDesign = {
   goal: string;
   tools: string[];
   acceptanceCriteria: string[];
-  dependencies: string[];
+  /** Agent ids this agent genuinely cannot start without (e.g. a QA/reviewer agent depending on implementation agents). Real scheduling gate — leave empty for independent, immediately-parallel work. */
+  dependsOnAgentIds: string[];
 };
 
 export type OrganizationDesign = {
   organizationName: string;
+  /** Independent workstreams Strategy Weaver identified; used only for logging/telemetry, never to clamp the agent roster. */
+  parallelizableWorkstreams?: string[];
+  recommendedAgentCount?: number;
   agents: OrganizationAgentDesign[];
 };
 
@@ -265,4 +270,6 @@ export type SimulationState = {
   agentSignals: AgentSignal[];
   ownershipIndex: OwnershipIndex;
   isComplete: boolean;
+  /** Unix ms when the mission started; used to compute real elapsed time on timeline events. */
+  startedAt: number;
 };

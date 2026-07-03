@@ -584,6 +584,17 @@ export async function executeNextAgentTask(run: MissionRun) {
   return executeAgentTask(run, nextTask.ownerAgentId);
 }
 
+/** True once the given agent's owned PR (if any) has actually merged. No owned PR yet means nothing to depend on. */
+export function isAgentDependencySatisfied(run: MissionRun, dependencyAgentId: string) {
+  const ownedPr = run.state.pullRequests.find((pr) => pr.ownerAgentId === dependencyAgentId);
+  return !ownedPr || ownedPr.status === "Approved";
+}
+
+/** Real scheduling gate: a task with unmet dependsOnAgentIds is not executable yet, full stop. */
+export function taskDependenciesSatisfied(run: MissionRun, task: SimulationState["tasks"][number]) {
+  return task.dependsOnAgentIds.every((dependencyAgentId) => isAgentDependencySatisfied(run, dependencyAgentId));
+}
+
 export function getExecutableTasks(run: MissionRun, executedTaskIds = getCompletedTaskIds(run), limit = 4) {
   const busyOwners = new Set(
     run.state.pullRequests
@@ -597,6 +608,7 @@ export function getExecutableTasks(run: MissionRun, executedTaskIds = getComplet
       if (executedTaskIds.has(task.id)) return false;
       if (busyOwners.has(task.ownerAgentId)) return false;
       if (task.status === "blocked") return false;
+      if (!taskDependenciesSatisfied(run, task)) return false;
       return true;
     })
     .filter((task) => {
@@ -607,13 +619,18 @@ export function getExecutableTasks(run: MissionRun, executedTaskIds = getComplet
     .slice(0, limit);
 }
 
+/**
+ * By the time a task reaches execution, getExecutableTasks already enforced
+ * its real dependsOnAgentIds — this only posts a coordination note for the
+ * defensive case where a dependency later regresses (e.g. its PR gets sent
+ * back to revision) after this agent already started speculatively.
+ */
 export function postSpeculativeDependencyNotes(
   run: MissionRun,
   agent: Agent,
   task: SimulationState["tasks"][number]
 ) {
-  const completedTaskIds = getCompletedTaskIds(run);
-  const missingDependencies = task.dependencies.filter((dependency) => !completedTaskIds.has(dependency));
+  const missingDependencies = task.dependsOnAgentIds.filter((dependencyAgentId) => !isAgentDependencySatisfied(run, dependencyAgentId));
   if (missingDependencies.length === 0) return;
 
   const alreadyPosted = run.state.bookEntries.some((entry) =>
@@ -624,9 +641,7 @@ export function postSpeculativeDependencyNotes(
   );
   if (alreadyPosted) return;
 
-  const dependencyOwners = missingDependencies
-    .map((dependency) => run.state.tasks.find((candidate) => candidate.id === dependency)?.ownerAgentId)
-    .filter((ownerId): ownerId is string => Boolean(ownerId && ownerId !== agent.id));
+  const dependencyOwners = missingDependencies.filter((ownerId) => ownerId !== agent.id);
 
   postBookEntry(run, {
     type: "question",

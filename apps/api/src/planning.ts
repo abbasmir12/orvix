@@ -209,7 +209,7 @@ export function createSoloOrganization(run: MissionRun, orvixMap: OrvixMap | nul
         acceptanceCriteria: acceptanceCriteria.length > 0
           ? acceptanceCriteria
           : ["Mission requirements are fully implemented", "Project builds and runs"],
-        dependencies: []
+        dependsOnAgentIds: []
       }
     ]
   };
@@ -415,6 +415,26 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
     });
     broadcast(run, "state", run.state);
     appendEvent(run, run.mode === "solo" ? "Solo baseline organization assigned" : "Qwen Strategy Weaver returned organization design", "success");
+    if (run.mode !== "solo") {
+      const workstreams = organizationDesign.parallelizableWorkstreams ?? [];
+      const dependentAgents = organizationDesign.agents.filter((agent) => (agent.dependsOnAgentIds ?? []).length > 0);
+      postBookEntry(run, {
+        type: "decision",
+        fromAgentId: "mastermind-agent",
+        message: [
+          `Strategy Weaver designed "${organizationDesign.organizationName || "the organization"}" with ${organizationDesign.agents.length} agent(s) (recommended: ${organizationDesign.recommendedAgentCount ?? organizationDesign.agents.length}).`,
+          `Parallelizable workstreams identified: ${workstreams.length > 0 ? workstreams.join("; ") : "none listed"}.`,
+          dependentAgents.length > 0
+            ? `Agents with a real scheduling dependency (won't start until their dependency merges): ${dependentAgents.map((agent) => `${agent.name} → ${agent.dependsOnAgentIds.join(", ")}`).join("; ")}.`
+            : "Every agent is independent and starts immediately in parallel."
+        ].join(" "),
+        scope: "mission",
+        visibility: "global",
+        topics: ["organization-design", "strategy-weaver", "parallelism"],
+        priority: "normal",
+        status: "final"
+      });
+    }
     recordPlanningStage(run, "organization", "completed", `${organizationDesign.agents.length} agents designed`, Date.now() - stageStartedAt);
   } catch (error) {
     addReasoningArtifact(run, {

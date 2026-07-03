@@ -21,16 +21,25 @@ const slug = (value: string) =>
 const eventId = () => `event-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const timelineHistoryLimit = 240;
 
+function formatElapsed(elapsedMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mm = minutes.toString().padStart(2, "0");
+  const ss = seconds.toString().padStart(2, "0");
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 export function appendTimelineEvent(
   state: SimulationState,
   message: string,
   severity: TimelineEvent["severity"] = "info"
 ): SimulationState {
   const eventSequence = state.eventSequence + 1;
-  const seconds = eventSequence * 3 - 2;
   const event: TimelineEvent = {
     id: eventId(),
-    time: `00:${seconds.toString().padStart(2, "0")}`,
+    time: formatElapsed(Date.now() - state.startedAt),
     message,
     severity
   };
@@ -90,7 +99,7 @@ function toTask(design: OrganizationDesign["agents"][number], agent: Agent, inde
     title: design.goal || `Complete ${agent.name} workstream`,
     ownerAgentId: agent.id,
     branch: `feat/${slug(agent.name)}`,
-    dependencies: design.dependencies.map(slug),
+    dependsOnAgentIds: (design.dependsOnAgentIds ?? []).map(slug),
     filesLikelyAffected: [`work/${slug(agent.name)}.md`],
     acceptanceCriteria: design.acceptanceCriteria.length > 0
       ? design.acceptanceCriteria
