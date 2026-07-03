@@ -127,11 +127,20 @@ npm run start:api &
 npm run benchmark -- "Build a 2D snake game in the browser with score and game over"
 ```
 
-This writes `.orvix/benchmarks/benchmark-report.md` comparing wall-clock time, files written, PRs approved, Qwen calls, and tokens between the two modes. Run it and paste the resulting table here before submission:
+This writes `.orvix/benchmarks/benchmark-report.md` comparing wall-clock time, files written, PRs approved, Qwen calls, and tokens between the two modes. Sample run (mission: a single static HTML page):
 
-```
-<paste .orvix/benchmarks/benchmark-report.md table here>
-```
+| Metric | Solo (1 agent) | Orvix Society |
+| --- | --- | --- |
+| Completed | yes | yes |
+| Wall-clock time | 544s | 785s |
+| Agents | 2 | 4 |
+| Tasks completed | 1/1 | 3/3 |
+| PRs approved | 1/1 | 3/3 |
+| Files written | 1 | 3 |
+| Qwen calls | 14 | 46 |
+| Total tokens | 152,833 | 731,330 |
+
+On a mission this small, Strategy Weaver split trivial work into 3 specialist tasks and the coordination/review overhead outweighed the parallelism gain (society was ~1.4x slower here, though its output was more polished — CSS custom properties, focus states, hover states). This is the honest result, not a cherry-picked one: Agent Society earns its keep on missions with real independent surface area (e.g. a CRM with auth + dashboard + contacts + notes), where specialists can genuinely parallelize instead of subdividing one page. Re-run the benchmark on a larger, multi-surface mission for a submission number that reflects that case.
 
 ## Qwen Cloud configuration
 
