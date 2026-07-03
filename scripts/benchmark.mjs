@@ -7,7 +7,13 @@
 //   [--api-url http://localhost:8787] [--timeout 900000] [--poll 4000]
 
 const args = process.argv.slice(2);
-const positional = args.filter((arg) => !arg.startsWith("--"));
+const knownFlags = ["api-url", "timeout", "poll"];
+const flagValueIndexes = new Set();
+for (const flag of knownFlags) {
+  const index = args.indexOf(`--${flag}`);
+  if (index !== -1 && index < args.length - 1) flagValueIndexes.add(index + 1);
+}
+const positional = args.filter((arg, index) => !arg.startsWith("--") && !flagValueIndexes.has(index));
 const mission = positional.join(" ").trim() ||
   "Build a 2D snake game in the browser with keyboard controls, score display, and game over screen";
 

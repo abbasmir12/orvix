@@ -143,6 +143,8 @@ QWEN_MODEL=qwen-plus
 
 `packages/qwen` talks to Alibaba Cloud Model Studio's OpenAI-compatible `/chat/completions` endpoint with native `tool_calls`, JSON response mode, per-role model overrides (`QWEN_PLANNER_MODEL` / `QWEN_AGENT_MODEL` / `QWEN_REVIEW_MODEL`), a global concurrency semaphore, and exponential-backoff retry on 429/5xx. See `.env.example` for every tunable (timeouts, concurrency, agent turn/tool-call budgets, solo-mode budgets).
 
+**Model fallback chains.** `QWEN_MODEL` (and each per-role override) accepts either a single model or a comma-separated chain, e.g. `QWEN_MODEL=qwen3.7-max,qwen3.7-plus,qwen3.6-max`. Each model has its own free-tier quota pool; when the active model's quota is exhausted mid-run, the client detects the `AllocationQuota` error and seamlessly switches to the next model in the chain for all subsequent calls — no dropped mission, no manual restart. A single value with no comma behaves exactly as before.
+
 ## Alibaba Cloud deployment
 
 ```bash

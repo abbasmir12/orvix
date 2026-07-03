@@ -509,6 +509,30 @@ async function withRequestSlot<T>(limit: number, work: () => Promise<T>): Promis
   }
 }
 
+/** Splits a possibly comma-separated QWEN_*_MODEL value into an ordered fallback chain. */
+function parseModelChain(raw: string): string[] {
+  const models = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  return Array.from(new Set(models.length > 0 ? models : ["qwen-plus"]));
+}
+
+// Models found to have exhausted their free-tier quota this process lifetime.
+// Shared across all QwenClient instances/roles so one exhausted model isn't
+// retried elsewhere in the chain once another role has already learned it's dead.
+const exhaustedModels = new Set<string>();
+
+function isQuotaExhaustedError(status: number, body: string) {
+  if (status !== 403 && status !== 429) return false;
+  return /quota/i.test(body) || /AllocationQuota/i.test(body);
+}
+
+function firstAvailableModelIndex(chain: string[], startIndex = 0) {
+  for (let offset = 0; offset < chain.length; offset += 1) {
+    const index = (startIndex + offset) % chain.length;
+    if (!exhaustedModels.has(chain[index])) return index;
+  }
+  return -1;
+}
+
 function retryDelayMs(attempt: number, retryAfterHeader?: string | null) {
   const retryAfter = Number(retryAfterHeader ?? "");
   if (Number.isFinite(retryAfter) && retryAfter > 0) {
@@ -574,10 +598,12 @@ const maxRequestAttempts = 3;
 export class QwenClient {
   constructor(private readonly config = createQwenConfig()) {}
 
-  private modelForRole(role: QwenRole = "planner") {
-    if (role === "agent") return this.config.agentModel ?? this.config.model;
-    if (role === "review") return this.config.reviewModel ?? this.config.model;
-    return this.config.plannerModel ?? this.config.model;
+  /** Ordered model fallback chain for a role. A single model (no comma) behaves exactly as before. */
+  private modelChainForRole(role: QwenRole = "planner") {
+    const raw = role === "agent" ? this.config.agentModel ?? this.config.model
+      : role === "review" ? this.config.reviewModel ?? this.config.model
+        : this.config.plannerModel ?? this.config.model;
+    return parseModelChain(raw);
   }
 
   async chatDetailed(messages: ChatMessage[], options: QwenChatOptions = {}): Promise<QwenChatResult> {
@@ -589,12 +615,19 @@ export class QwenClient {
     const thinkingEnabled = options.thinking === true && process.env.QWEN_ENABLE_THINKING === "true";
     const thinkingBudget = Number(process.env.QWEN_THINKING_BUDGET ?? "");
     const role = options.role ?? "planner";
-    const model = this.modelForRole(role);
+    const modelChain = this.modelChainForRole(role);
+    let modelIndex = Math.max(0, firstAvailableModelIndex(modelChain));
     // response_format and tools are mutually exclusive on DashScope; native
     // tool sessions rely on tool_calls, not JSON bodies.
     let useJsonFormat = options.json === true && !options.nativeTools?.length;
 
-    for (let attempt = 0; attempt < maxRequestAttempts; attempt += 1) {
+    // Transient (429/5xx/network) retries and model-chain switches on quota
+    // exhaustion share one bounded loop so a multi-model chain gets a fair
+    // shot without retrying forever.
+    const maxIterations = maxRequestAttempts + modelChain.length;
+    let transientAttempt = 0;
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      const model = modelChain[modelIndex];
       const requestBody: Record<string, unknown> = {
         model,
         messages,
@@ -638,8 +671,9 @@ export class QwenClient {
           }
           throw new Error(`Qwen request timed out after ${timeoutMs}ms`);
         }
-        if (attempt < maxRequestAttempts - 1) {
-          await sleep(retryDelayMs(attempt));
+        if (transientAttempt < maxRequestAttempts - 1) {
+          transientAttempt += 1;
+          await sleep(retryDelayMs(transientAttempt));
           continue;
         }
         throw error;
@@ -648,9 +682,21 @@ export class QwenClient {
 
       if (!response.ok) {
         const body = await response.text();
+        if (isQuotaExhaustedError(response.status, body) && modelChain.length > 1) {
+          exhaustedModels.add(model);
+          const next = firstAvailableModelIndex(modelChain, modelIndex + 1);
+          if (next !== -1) {
+            console.warn(`[qwen] ${model} quota exhausted; switching to ${modelChain[next]} for role "${role}"`);
+            modelIndex = next;
+            continue;
+          }
+          // Every model in the chain is marked exhausted; give the current one
+          // one last shot in case it was a transient/rate-limit-shaped 403.
+        }
         const retryable = response.status === 429 || response.status >= 500;
-        if (retryable && attempt < maxRequestAttempts - 1) {
-          await sleep(retryDelayMs(attempt, response.headers.get("retry-after")));
+        if (retryable && transientAttempt < maxRequestAttempts - 1) {
+          transientAttempt += 1;
+          await sleep(retryDelayMs(transientAttempt, response.headers.get("retry-after")));
           continue;
         }
         if (response.status === 400 && useJsonFormat) {
@@ -663,7 +709,7 @@ export class QwenClient {
         if (thinkingEnabled) {
           return this.chatDetailed(messages, { ...options, thinking: false });
         }
-        throw new Error(`Qwen request failed with ${response.status}: ${body.slice(0, 600)}`);
+        throw new Error(`Qwen request failed with ${response.status}: ${body.slice(0, 600)} (model: ${model})`);
       }
 
       const payload = (await response.json()) as ChatCompletionResponse;
