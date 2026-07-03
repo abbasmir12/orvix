@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { progressBar } from "../lib/progress.js";
 import { theme } from "../lib/theme.js";
-import type { ReasoningArtifact, SimulationState } from "../types.js";
+import type { PlanningStageEvent, PlanningStageId, ReasoningArtifact, SimulationState } from "../types.js";
 
 type PlanningConsoleProps = {
   state: SimulationState;
@@ -10,7 +10,48 @@ type PlanningConsoleProps = {
   mode: "mock" | "cloud";
   apiUrl: string;
   reasoningArtifacts: ReasoningArtifact[];
+  planningStages: PlanningStageEvent[];
 };
+
+const planningStageOrder: PlanningStageId[] = ["research", "council", "scaffold", "analysis", "orvix_map", "organization", "rubric"];
+
+const planningStageLabels: Record<PlanningStageId, string> = {
+  research: "Planning research",
+  council: "Planning council",
+  scaffold: "Scaffold selection",
+  analysis: "MasterMind analysis",
+  orvix_map: "Orvix Map",
+  organization: "Strategy org design",
+  rubric: "Critic review rubric"
+};
+
+function latestStage(stages: PlanningStageEvent[], stage: PlanningStageId) {
+  for (let index = stages.length - 1; index >= 0; index -= 1) {
+    if (stages[index].stage === stage) return stages[index];
+  }
+  return undefined;
+}
+
+function stageGlyph(status?: PlanningStageEvent["status"]) {
+  if (status === "completed") return "✓";
+  if (status === "degraded") return "!";
+  if (status === "failed") return "✗";
+  if (status === "started") return "◐";
+  return "○";
+}
+
+function stageGlyphColor(status?: PlanningStageEvent["status"]) {
+  if (status === "completed") return "green";
+  if (status === "degraded" || status === "failed") return "yellow";
+  if (status === "started") return theme.accent;
+  return "gray";
+}
+
+function formatElapsed(elapsedMs?: number) {
+  if (typeof elapsedMs !== "number") return "";
+  if (elapsedMs < 1000) return `${elapsedMs}ms`;
+  return `${(elapsedMs / 1000).toFixed(1)}s`;
+}
 
 const fit = (value: string, width: number) => {
   if (value.length <= width) return value.padEnd(width, " ");
@@ -353,7 +394,8 @@ export function PlanningConsole({
   mission,
   mode,
   apiUrl,
-  reasoningArtifacts
+  reasoningArtifacts,
+  planningStages
 }: PlanningConsoleProps) {
   const { stdout } = useStdout();
   const width = Math.max(72, stdout.columns ?? 80);
@@ -369,8 +411,14 @@ export function PlanningConsole({
   const planningEvents = state.events.filter((event) =>
     /planning|qwen|mastermind|strategy|critic|release|scaffold|autopilot/i.test(event.message)
   );
+  const completedStages = planningStageOrder.filter((stage) => {
+    const status = latestStage(planningStages, stage)?.status;
+    return status === "completed" || status === "degraded";
+  }).length;
   const progress = mode === "cloud"
-    ? Math.min(96, reasoningArtifacts.length * 22 + planningEvents.length * 8 + (latestEvent ? 8 : 0))
+    ? planningStages.length > 0
+      ? Math.round((completedStages / planningStageOrder.length) * 100)
+      : Math.min(96, reasoningArtifacts.length * 22 + planningEvents.length * 8 + (latestEvent ? 8 : 0))
     : 18;
   const latest = latestArtifact(reasoningArtifacts);
   const rows = stdout.rows ?? 34;
@@ -471,18 +519,39 @@ export function PlanningConsole({
         <Box width={railWidth} flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={1}>
           <Text color={theme.accent} bold>Launch Rail</Text>
           <Box marginTop={1} flexDirection="column">
-            {artifactOrder.map((kind, index) => {
-              const status = artifactStatus(kind, reasoningArtifacts);
-              return (
-                <Box key={kind} flexDirection="column" marginBottom={1}>
-                  <Text>
-                    <Text color={statusColor(status)}>{statusGlyph(status)} </Text>
-                    <Text>{fit(artifactLabels[kind], innerRailWidth)}</Text>
-                  </Text>
-                  <Text color="gray">  {fit(handoffLabel(index), innerRailWidth)}</Text>
-                </Box>
-              );
-            })}
+            {mode === "cloud" && planningStages.length > 0
+              ? planningStageOrder.map((stage) => {
+                const event = latestStage(planningStages, stage);
+                const degraded = event?.status === "degraded" || event?.status === "failed";
+                const detailText = degraded
+                  ? `degraded: ${event?.detail ?? "unknown reason"}`
+                  : event?.status === "started"
+                    ? "running…"
+                    : event?.status === "completed"
+                      ? formatElapsed(event.elapsedMs) || "done"
+                      : "waiting";
+                return (
+                  <Box key={stage} flexDirection="column" marginBottom={1}>
+                    <Text>
+                      <Text color={stageGlyphColor(event?.status)}>{stageGlyph(event?.status)} </Text>
+                      <Text>{fit(planningStageLabels[stage], innerRailWidth)}</Text>
+                    </Text>
+                    <Text color={degraded ? "yellow" : "gray"}>  {fit(detailText, innerRailWidth)}</Text>
+                  </Box>
+                );
+              })
+              : artifactOrder.map((kind, index) => {
+                const status = artifactStatus(kind, reasoningArtifacts);
+                return (
+                  <Box key={kind} flexDirection="column" marginBottom={1}>
+                    <Text>
+                      <Text color={statusColor(status)}>{statusGlyph(status)} </Text>
+                      <Text>{fit(artifactLabels[kind], innerRailWidth)}</Text>
+                    </Text>
+                    <Text color="gray">  {fit(handoffLabel(index), innerRailWidth)}</Text>
+                  </Box>
+                );
+              })}
           </Box>
           {!compact ? (
             <Box marginTop={1} flexDirection="column">

@@ -2,10 +2,10 @@ import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { progressBar, statusSymbol } from "../lib/progress.js";
 import { theme } from "../lib/theme.js";
-import type { Agent, AgentCall, AgentCallStatus, PullRequest, ReasoningArtifact, SimulationState, TimelineEvent } from "../types.js";
+import type { Agent, AgentCall, AgentCallStatus, AgentTurnEvent, PullRequest, ReasoningArtifact, RunMetricsSummary, SimulationState, TimelineEvent } from "../types.js";
 
 export type CockpitPanel = "focus" | "agents" | "activity" | "input";
-export type ActivityTab = "signals" | "prs" | "decisions" | "reasoning" | "book";
+export type ActivityTab = "turns" | "signals" | "prs" | "decisions" | "reasoning" | "book";
 export type InspectorTab = "overview" | "trace" | "files" | "book" | "review";
 
 type MissionCockpitProps = {
@@ -23,6 +23,8 @@ type MissionCockpitProps = {
   mode: "mock" | "cloud";
   missionId: string | null;
   executionStatus: string;
+  agentTurns: AgentTurnEvent[];
+  metrics: RunMetricsSummary | null;
 };
 
 const fit = (value: string, width: number) => {
@@ -157,7 +159,7 @@ function PanelTitle({ title, active }: { title: string; active: boolean }) {
   );
 }
 
-function TopStatus({ state, width }: { state: SimulationState; width: number }) {
+function TopStatus({ state, width, metrics }: { state: SimulationState; width: number; metrics?: RunMetricsSummary | null }) {
   const active = state.agents.filter((agent) => agent.status === "active").length;
   const blocked = state.agents.filter((agent) => agent.status === "blocked").length;
   const returned = state.agentCalls.filter((call) => call.status === "returned").length;
@@ -165,11 +167,17 @@ function TopStatus({ state, width }: { state: SimulationState; width: number }) 
 
   const statusWidth = Math.max(24, width - 12);
   const status = `${state.analysis.id}  ${state.phase}  calls ${returned}/${state.agentCalls.length}  prs ${approved}/${state.pullRequests.length}  active ${active}  blocked ${blocked}`;
+  const metricsLine = metrics
+    ? `qwen calls ${metrics.qwenCalls}  tokens ${metrics.totalTokens.toLocaleString()}  files ${metrics.filesWritten}  ${Math.round(metrics.wallClockMs / 1000)}s`
+    : null;
 
   return (
-    <Box width={width} borderStyle="single" borderColor={theme.accent} paddingX={1} marginBottom={1}>
-      <Text color={theme.accent} bold>ORVIX</Text>
-      <Text color="gray">  {fit(status, statusWidth)}</Text>
+    <Box width={width} borderStyle="single" borderColor={theme.accent} paddingX={1} marginBottom={1} justifyContent="space-between">
+      <Box>
+        <Text color={theme.accent} bold>ORVIX</Text>
+        <Text color="gray">  {fit(status, statusWidth)}</Text>
+      </Box>
+      {metricsLine ? <Text color="gray">{metricsLine}</Text> : null}
     </Box>
   );
 }
@@ -273,7 +281,8 @@ function ActivityPanel({
   active,
   width,
   contentRows,
-  reasoningArtifacts
+  reasoningArtifacts,
+  agentTurns
 }: {
   state: SimulationState;
   activityTab: ActivityTab;
@@ -282,12 +291,15 @@ function ActivityPanel({
   width: number;
   contentRows: number;
   reasoningArtifacts: ReasoningArtifact[];
+  agentTurns: AgentTurnEvent[];
 }) {
-  const tabs: ActivityTab[] = ["signals", "prs", "decisions", "reasoning", "book"];
+  const tabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "reasoning", "book"];
   const rows = Math.max(3, contentRows);
   const contentWidth = Math.max(20, width - 4);
   const result =
-    activityTab === "signals"
+    activityTab === "turns"
+      ? agentTurnLines(agentTurns, contentWidth)
+      : activityTab === "signals"
       ? signalsLines(state.events, contentWidth)
       : activityTab === "prs"
         ? pullRequestLines(state.pullRequests, contentWidth)
@@ -335,6 +347,32 @@ function ActivityPanel({
       </Box>
     </Box>
   );
+}
+
+function agentTurnLines(turns: AgentTurnEvent[], width: number): ActivityLine[] {
+  if (turns.length === 0) {
+    return [{
+      id: "turns-empty",
+      node: <Text color="gray">Waiting for agents to start working — live tool calls will stream here as they happen.</Text>
+    }];
+  }
+
+  return turns.flatMap((turn) => {
+    const time = turn.at.slice(11, 19);
+    const label = `${time} ${turn.agentName} `;
+    const color = turn.ok === false ? "yellow" : turn.kind === "harness" ? "gray" : theme.accent;
+    const detail = turn.tool
+      ? `${turn.tool}${turn.path ? ` ${turn.path}` : ""}${turn.detail ? ` — ${turn.detail}` : ""}`
+      : turn.detail ?? (turn.kind === "note" ? "…thinking" : turn.kind);
+    return labeledLines(
+      `${turn.agentId}-${turn.turn}-${turn.tool ?? turn.kind}-${turn.at}`,
+      label,
+      detail,
+      width,
+      color,
+      turn.ok === false ? "yellow" : undefined
+    );
+  });
 }
 
 function signalsLines(events: TimelineEvent[], width: number): ActivityLine[] {
@@ -1381,7 +1419,7 @@ function CommandBar({
     <Box width={width} borderStyle="single" borderColor={active ? theme.accent : "gray"} paddingX={1} marginTop={1} flexDirection="column">
 	      <Text>
 	        <Text color={theme.accent}>› </Text>
-	        <Text color="gray">{fit(`Tab switch · ↑/↓ ${activePanel === "activity" || expandedPanel === "activity" ? "scroll" : "agents"} · wheel activity · Enter inspect · 0 home · m menu · 1-5 tabs · e ${expandedPanel ? "restore" : "expand"} · q quit`, Math.max(24, width - 6))}</Text>
+	        <Text color="gray">{fit(`Tab switch · ↑/↓ ${activePanel === "activity" || expandedPanel === "activity" ? "scroll" : "agents"} · wheel activity · Enter inspect · 0 home · m menu · 1-6 tabs (1 live turns) · e ${expandedPanel ? "restore" : "expand"} · q quit`, Math.max(24, width - 6))}</Text>
 	      </Text>
       <Text>
         <Text color={mode === "cloud" && missionId ? theme.accent : "gray"}>→ </Text>
@@ -1405,7 +1443,9 @@ export function MissionCockpit({
   showMenu,
   mode,
   missionId,
-  executionStatus
+  executionStatus,
+  agentTurns,
+  metrics
 }: MissionCockpitProps) {
   const { stdout } = useStdout();
   const width = Math.max(72, stdout.columns ?? 80);
@@ -1440,7 +1480,7 @@ export function MissionCockpit({
   if (expandedPanel === "focus") {
     return (
       <Box flexDirection="column">
-        <TopStatus state={state} width={width} />
+        <TopStatus state={state} width={width} metrics={metrics} />
         <FocusPanel state={state} selectedAgent={selectedAgent} active width={width} />
         <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
       </Box>
@@ -1450,7 +1490,7 @@ export function MissionCockpit({
   if (expandedPanel === "agents") {
     return (
       <Box flexDirection="column">
-        <TopStatus state={state} width={width} />
+        <TopStatus state={state} width={width} metrics={metrics} />
         <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active width={width} />
         <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
       </Box>
@@ -1460,7 +1500,7 @@ export function MissionCockpit({
   if (expandedPanel === "activity") {
     return (
       <Box flexDirection="column">
-        <TopStatus state={state} width={width} />
+        <TopStatus state={state} width={width} metrics={metrics} />
 	        <ActivityPanel
 	          state={state}
 	          activityTab={activityTab}
@@ -1469,6 +1509,7 @@ export function MissionCockpit({
 	          width={width}
 	          contentRows={expandedActivityRows}
 	          reasoningArtifacts={reasoningArtifacts}
+	          agentTurns={agentTurns}
 	        />
         <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
       </Box>
@@ -1477,7 +1518,7 @@ export function MissionCockpit({
 
   return (
     <Box flexDirection="column">
-      <TopStatus state={state} width={width} />
+      <TopStatus state={state} width={width} metrics={metrics} />
       <Box width={width}>
         <Box width={leftWidth}>
           <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} />
@@ -1494,6 +1535,7 @@ export function MissionCockpit({
         width={width}
         contentRows={normalActivityRows}
         reasoningArtifacts={reasoningArtifacts}
+        agentTurns={agentTurns}
       />
       <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
     </Box>

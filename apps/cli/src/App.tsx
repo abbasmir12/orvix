@@ -8,7 +8,7 @@ import {
   nudgeActiveProgress,
   simulationSteps
 } from "./data/mockSimulation.js";
-import type { ReasoningArtifact, SimulationState } from "./types.js";
+import type { AgentTurnEvent, PlanningStageEvent, ReasoningArtifact, RunMetricsSummary, SimulationState } from "./types.js";
 
 type AppProps = {
   mission: string;
@@ -30,7 +30,7 @@ function actionErrorMessage(error: unknown, apiUrl: string) {
   return `Execution failed: ${message}`;
 }
 
-const activityTabs: ActivityTab[] = ["signals", "prs", "decisions", "reasoning", "book"];
+const activityTabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "reasoning", "book"];
 const inspectorTabs: InspectorTab[] = ["overview", "trace", "files", "book", "review"];
 const enableSgrMouse = "\u001b[?1000h\u001b[?1002h\u001b[?1006h";
 const disableSgrMouse = "\u001b[?1000l\u001b[?1002l\u001b[?1006l";
@@ -69,8 +69,9 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
   const [stepIndex, setStepIndex] = useState(0);
   const [selectedAgentIndex, setSelectedAgentIndex] = useState(0);
   const [activePanel, setActivePanel] = useState<CockpitPanel>("focus");
-  const [activityTab, setActivityTab] = useState<ActivityTab>("signals");
+  const [activityTab, setActivityTab] = useState<ActivityTab>("turns");
   const [activityScroll, setActivityScroll] = useState<Record<ActivityTab, number>>({
+    turns: 0,
     signals: 0,
     prs: 0,
     decisions: 0,
@@ -91,6 +92,9 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
   const [showMenu, setShowMenu] = useState(false);
   const [missionId, setMissionId] = useState<string | null>(null);
   const [executionStatus, setExecutionStatus] = useState<string>("Workspace execution idle");
+  const [planningStages, setPlanningStages] = useState<PlanningStageEvent[]>([]);
+  const [agentTurns, setAgentTurns] = useState<AgentTurnEvent[]>([]);
+  const [metrics, setMetrics] = useState<RunMetricsSummary | null>(null);
 
   async function runAgentExecution(kind: "next" | "selected" | "review" | "autopilot") {
     if (mode !== "cloud" || !missionId) {
@@ -334,6 +338,11 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
       return;
     }
 
+    if (input === "6") {
+      selectActivityTab(activityTabs[5]);
+      return;
+    }
+
     if (input === "x") {
       void runAgentExecution("next");
       return;
@@ -458,6 +467,20 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
                 return [...current, nextArtifact];
               });
             }
+
+            if (message.event === "planning") {
+              const stageEvent = message.data as PlanningStageEvent;
+              setPlanningStages((current) => [...current, stageEvent]);
+            }
+
+            if (message.event === "planning_snapshot") {
+              setPlanningStages(message.data as PlanningStageEvent[]);
+            }
+
+            if (message.event === "agent_turn") {
+              const turnEvent = message.data as AgentTurnEvent;
+              setAgentTurns((current) => [...current, turnEvent].slice(-300));
+            }
           }
         }
       } catch (error) {
@@ -488,6 +511,31 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
     };
   }, [apiUrl, mission, mode]);
 
+  useEffect(() => {
+    if (mode !== "cloud" || !missionId) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function pollMetrics() {
+      try {
+        const response = await fetch(`${apiUrl}/missions/${missionId}/metrics`, { signal: controller.signal });
+        if (!response.ok || cancelled) return;
+        setMetrics(await response.json() as RunMetricsSummary);
+      } catch {
+        // metrics are best-effort telemetry; a missed poll is not worth surfacing
+      }
+    }
+
+    void pollMetrics();
+    const interval = setInterval(() => void pollMetrics(), 3000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, [apiUrl, mode, missionId]);
+
   return (
     <Box flexDirection="column">
       <Box flexDirection="column">
@@ -498,6 +546,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
             mode={mode}
             apiUrl={apiUrl}
             reasoningArtifacts={reasoningArtifacts}
+            planningStages={planningStages}
           />
         ) : (
           <MissionCockpit
@@ -515,6 +564,8 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
             mode={mode}
             missionId={missionId}
             executionStatus={executionStatus}
+            agentTurns={agentTurns}
+            metrics={metrics}
           />
         )}
       </Box>
