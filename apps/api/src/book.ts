@@ -126,8 +126,8 @@ export function getBookContext(run: MissionRun, agentId: string, taskId?: string
   );
 
   return {
-    entries: relevantEntries.slice(-25),
-    unreadSignals: unreadSignals.slice(-12),
+    entries: relevantEntries.slice(-15),
+    unreadSignals: unreadSignals.slice(-8),
     ownershipIndex: run.state.ownershipIndex
   };
 }

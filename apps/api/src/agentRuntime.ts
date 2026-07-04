@@ -130,7 +130,10 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
     }
   }
 
-  const workspaceFiles = listWorkspaceFiles(workspace);
+  const workspaceListing = listWorkspaceFiles(workspace);
+  const workspaceFiles = workspaceListing.ok && "files" in workspaceListing && Array.isArray(workspaceListing.files) && workspaceListing.files.length > 200
+    ? { ...workspaceListing, files: workspaceListing.files.slice(0, 200), truncated: true }
+    : workspaceListing;
   postSpeculativeDependencyNotes(run, agent, task);
   const bookContext = getBookContext(run, agent.id, task.id);
   const reviewFeedback = reviewFeedbackForTask(run, task);
@@ -386,6 +389,32 @@ async function runAgentSession(
   const maxToolCalls = run.mode === "solo"
     ? envPositiveInt("QWEN_SOLO_AGENT_MAX_TOOL_CALLS", 150, 400)
     : agentExecutionToolCallLimit;
+  // Token diet: the whole opening message is re-sent on every session turn,
+  // so full agent/task/PR objects (activity strings, comment history, other
+  // agents' acceptance criteria) multiply across ~10 turns for zero signal.
+  // The agent's own task/packet/feedback stay complete; the rest is roster.
+  const slimAgents = run.state.agents.map((candidate) => ({
+    id: candidate.id,
+    name: candidate.name,
+    role: candidate.role,
+    status: candidate.status
+  }));
+  const slimTasks = run.state.tasks.map((candidate) => candidate.id === task.id ? candidate : {
+    id: candidate.id,
+    title: candidate.title,
+    status: candidate.status,
+    branch: candidate.branch,
+    ownerAgentId: candidate.ownerAgentId,
+    dependsOnAgentIds: candidate.dependsOnAgentIds
+  });
+  const slimPullRequests = run.state.pullRequests.map((pr) => pr.ownerAgentId === agent.id ? pr : {
+    id: pr.id,
+    status: pr.status,
+    ownerAgentId: pr.ownerAgentId,
+    ownerName: pr.ownerName,
+    branch: pr.branch
+  });
+
   const messages: ChatMessage[] = createAgentSessionMessages({
     mission: run.mission,
     agent,
@@ -394,9 +423,9 @@ async function runAgentSession(
     workspaceFiles: context.workspaceFiles,
     bookContext: context.bookContext as never,
     organization: run.state.organization,
-    agents: run.state.agents,
-    tasks: run.state.tasks,
-    pullRequests: run.state.pullRequests,
+    agents: slimAgents as never,
+    tasks: slimTasks as never,
+    pullRequests: slimPullRequests as never,
     reviewFeedback: context.reviewFeedback,
     orvixMap: orvixMapContext(run),
     mapWorkPacket: mapWorkPacketForAgent(run, agent.id, task.id),
@@ -903,6 +932,50 @@ export function getExecutedBranches(run: MissionRun) {
   return branches;
 }
 
+/**
+ * Real file-ownership enforcement from the Orvix Map work packets. A write to
+ * a file that another agent's packet claims (and this agent's does not) is the
+ * root cause of merge conflicts and post-merge build breaks, so it is blocked
+ * at the tool level — the agent must coordinate through the Orvix Book
+ * instead. Files no packet claims stay free-for-all, and missions whose map
+ * has no packets keep the old unrestricted behavior.
+ */
+export function fileOwnershipConflict(
+  run: MissionRun,
+  agent: Agent,
+  task: SimulationState["tasks"][number],
+  path: string
+) {
+  // While main needs fix commits, the fixing agent may have to edit outside
+  // its packet (e.g. a broken import in an integration file) — enforcing
+  // ownership here would deadlock the build break against the turf rules.
+  if (run.mainNeedsFixes) return null;
+
+  const map = orvixMapContext(run);
+  const packets = (map?.agentWorkPackets ?? []).filter((packet) => packet && typeof packet === "object");
+  if (packets.length === 0) return null;
+
+  const normalizePath = (value: unknown) => String(value ?? "").trim().replace(/^\.\//, "");
+  const target = normalizePath(path);
+  if (!target) return null;
+
+  const ownPacket = mapWorkPacketForAgent(run, agent.id, task.id);
+  if ((ownPacket?.mustCreateOrUpdate ?? []).some((file) => normalizePath(file) === target)) {
+    return null;
+  }
+
+  for (const packet of packets) {
+    if (ownPacket && packet.id === ownPacket.id) continue;
+    if ((packet.mustCreateOrUpdate ?? []).some((file) => normalizePath(file) === target)) {
+      return {
+        packetId: String(packet.id ?? "unknown"),
+        ownerRole: String(packet.suggestedAgentRole ?? "another agent")
+      };
+    }
+  }
+  return null;
+}
+
 export async function executeAgentToolCall(
   run: MissionRun,
   agent: Agent,
@@ -918,6 +991,21 @@ export async function executeAgentToolCall(
       code: "tool_not_allowed",
       error: `${agent.name} is not allowed to use ${toolCall.tool}`
     };
+  }
+
+  if (toolCall.tool === "write_file" || toolCall.tool === "delete_file") {
+    const conflict = fileOwnershipConflict(run, agent, task, toolCall.path ?? "");
+    if (conflict) {
+      return {
+        ok: false,
+        tool: toolCall.tool,
+        code: "file_owned_by_other_agent",
+        error: [
+          `${toolCall.path} is owned by ${conflict.ownerRole} (work packet ${conflict.packetId}) per the Orvix Map, and your packet does not list it.`,
+          "Do not modify it. If you need a change there, post_book_entry a question or contract to the owner and code against the agreed interface in your own files."
+        ].join(" ")
+      };
+    }
   }
 
   switch (toolCall.tool) {
