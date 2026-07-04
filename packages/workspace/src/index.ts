@@ -385,20 +385,10 @@ export function syncWorkspaceBranch(workspace: Workspace, branch: string, source
     const safeBranch = validateBranchName(branch);
     const safeSourceBranch = validateBranchName(sourceBranch);
     runGit(workspace, ["checkout", safeBranch]);
-    let output: string;
-    try {
-      output = runGit(workspace, ["merge", "--no-ff", safeSourceBranch, "-m", `sync: ${safeBranch} with ${safeSourceBranch}`]);
-    } catch (mergeError) {
-      try {
-        runGit(workspace, ["merge", "--abort"]);
-      } catch {
-        // Nothing to abort, or abort failed because merge did not start.
-      }
-      output = [
-        errorMessage(mergeError),
-        runGit(workspace, ["merge", "--no-ff", "-X", "theirs", safeSourceBranch, "-m", `sync: ${safeBranch} with ${safeSourceBranch} preferring ${safeSourceBranch}`])
-      ].join("\n");
-    }
+    // No -X theirs fallback: auto-resolving conflicts in favor of main silently
+    // destroys the branch owner's in-progress work and triggers confused
+    // revision loops. A conflicted sync must fail so it is routed to the owner.
+    const output = runGit(workspace, ["merge", "--no-ff", safeSourceBranch, "-m", `sync: ${safeBranch} with ${safeSourceBranch}`]);
     return {
       ok: true,
       tool: "sync_branch",
