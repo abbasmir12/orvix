@@ -12,8 +12,9 @@ import {
 } from "./run.js";
 import { agentName, getBookContext, markSignalRead, postBookEntry } from "./book.js";
 import { executeAgentTask, getCompletedTaskIds, getExecutableTasks, getExecutedBranches } from "./agentRuntime.js";
-import { escalatePullRequestReview, getReviewAttemptCount, isNonBlockingReviewerPr, reviewPullRequest } from "./review.js";
+import { escalatePullRequestReview, getReviewAttemptCount, isNonBlockingReviewerPr, reviewPullRequest, trySupersedeEmptyDiffPr } from "./review.js";
 import { runIncrementalBuildGate, runRuntimeAcceptanceGate, shouldRunRuntimeAcceptance } from "./acceptance.js";
+import { envPositiveInt } from "./envConfig.js";
 
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -208,6 +209,183 @@ export async function runSchedulerTurn(run: MissionRun) {
   };
 }
 
+function completeMission(run: MissionRun, message: string) {
+  run.state = {
+    ...run.state,
+    phase: "final",
+    isComplete: true,
+    agents: run.state.agents.map((agent) => ({ ...agent, status: "completed", currentActivity: "Mission complete", progress: 100 }))
+  };
+  run.metrics.completedAt = Date.now();
+  appendEvent(run, message, "success");
+  writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+  broadcast(run, "complete", {
+    missionId: run.id,
+    status: "completed_scheduler"
+  });
+}
+
+type PoolJobKind = "execution" | "revision" | "review" | "signal" | "build";
+
+interface PoolJob {
+  key: string;
+  kind: PoolJobKind;
+  agentId?: string;
+  promise: Promise<unknown>;
+}
+
+/**
+ * Continuous work-pool scheduler. Unlike the wave scheduler (runSchedulerTurn,
+ * kept for the manual /scheduler/tick endpoint), revisions, signals, reviews,
+ * and executions are all in flight at the same time, and the moment any job
+ * finishes its slot is refilled — one slow agent no longer stalls the company.
+ *
+ * Safety rules encoded here:
+ * - one in-flight job per agent (an agent cannot execute and revise at once);
+ * - merges stay safe because mergeWorkspaceBranch/syncOpenBranchesAfterMerge
+ *   are fully synchronous git call chains (atomic w.r.t. the event loop);
+ * - the incremental build gate never overlaps a review job: it waits for
+ *   in-flight reviews to finish and blocks new ones while main is building;
+ * - the runtime acceptance gate only runs when the pool is fully drained.
+ */
+export async function runMissionPool(run: MissionRun) {
+  stopScriptedTimers(run);
+  const inFlight = new Map<string, PoolJob>();
+  const pendingBuildPrIds = new Set<number>();
+  const totalLimit = envPositiveInt("QWEN_POOL_CONCURRENCY", 6, 16);
+  let acceptanceAttempts = 0;
+  let jobsCompleted = 0;
+  let outcome = "idle";
+
+  const launch = (key: string, kind: PoolJobKind, agentId: string | undefined, work: () => Promise<unknown>) => {
+    const promise = (async () => {
+      try {
+        return await work();
+      } catch (error) {
+        appendEvent(run, `Scheduler ${kind} job failed: ${error instanceof Error ? error.message : "unknown error"}`, "warning");
+        return { ok: false, error };
+      } finally {
+        jobsCompleted += 1;
+        inFlight.delete(key);
+      }
+    })();
+    inFlight.set(key, { key, kind, agentId, promise });
+  };
+
+  const kindCount = (kind: PoolJobKind) => Array.from(inFlight.values()).filter((job) => job.kind === kind).length;
+
+  for (let round = 0; round < 5000; round += 1) {
+    if (run.state.isComplete) {
+      outcome = "complete";
+      break;
+    }
+
+    const busyAgents = new Set(Array.from(inFlight.values()).flatMap((job) => job.agentId ? [job.agentId] : []));
+    const buildRunning = inFlight.has("build");
+
+    for (const exhaustedPr of run.state.pullRequests.filter((pr) =>
+      pr.status === "Changes requested" && getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit
+    )) {
+      escalatePullRequestReview(run, exhaustedPr, getReviewAttemptCount(run, exhaustedPr.id));
+    }
+
+    // Revisions first: unblocking a stuck PR usually unblocks dependents too.
+    const revisionCap = schedulerConcurrency(run, "revision");
+    for (const pr of run.state.pullRequests) {
+      if (inFlight.size >= totalLimit || kindCount("revision") >= revisionCap) break;
+      if (pr.status !== "Changes requested" || isNonBlockingReviewerPr(run, pr)) continue;
+      if (getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit) continue;
+      const key = `revision:${pr.id}`;
+      if (inFlight.has(key) || busyAgents.has(pr.ownerAgentId)) continue;
+      const task = run.state.tasks.find((candidate) => candidate.branch === pr.branch && candidate.ownerAgentId === pr.ownerAgentId);
+      if (!task) continue;
+      if (trySupersedeEmptyDiffPr(run, pr)) continue;
+      busyAgents.add(pr.ownerAgentId);
+      appendEvent(run, `MasterMind routed PR #${pr.id} back to ${pr.ownerName} for revision`, "info");
+      launch(key, "revision", pr.ownerAgentId, () => executeAgentTask(run, pr.ownerAgentId, { taskId: task.id, revision: true }));
+    }
+
+    for (const signal of run.state.agentSignals) {
+      if (inFlight.size >= totalLimit || kindCount("signal") >= 4) break;
+      if (signal.status !== "unread") continue;
+      const key = `signal:${signal.id}`;
+      if (inFlight.has(key) || busyAgents.has(signal.toAgentId)) continue;
+      busyAgents.add(signal.toAgentId);
+      launch(key, "signal", signal.toAgentId, () => handleAgentSignal(run, signal));
+    }
+
+    const executedBranches = getExecutedBranches(run);
+    if (!buildRunning) {
+      const reviewCap = schedulerConcurrency(run, "review");
+      for (const pr of run.state.pullRequests) {
+        if (inFlight.size >= totalLimit || kindCount("review") >= reviewCap) break;
+        if (pr.status !== "In progress" || !executedBranches.has(pr.branch)) continue;
+        if (getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit) continue;
+        const key = `review:${pr.id}`;
+        if (inFlight.has(key)) continue;
+        launch(key, "review", undefined, async () => {
+          const result = await reviewPullRequest(run, pr.id) as { approved?: boolean; superseded?: boolean };
+          if (result.approved && !result.superseded) {
+            pendingBuildPrIds.add(pr.id);
+          }
+          return result;
+        });
+      }
+    }
+
+    const executionCap = schedulerConcurrency(run, "execution");
+    for (const task of getExecutableTasks(run, getCompletedTaskIds(run), 16)) {
+      if (inFlight.size >= totalLimit || kindCount("execution") >= executionCap) break;
+      const key = `execution:${task.id}`;
+      if (inFlight.has(key) || busyAgents.has(task.ownerAgentId)) continue;
+      busyAgents.add(task.ownerAgentId);
+      launch(key, "execution", task.ownerAgentId, () => executeAgentTask(run, task.ownerAgentId, { taskId: task.id }));
+    }
+
+    // Build gate on main runs only once merges have settled, and blocks new
+    // reviews (and their merges) while npm builds the merged tree.
+    if (pendingBuildPrIds.size > 0 && !buildRunning && kindCount("review") === 0) {
+      const mergedIds = Array.from(pendingBuildPrIds);
+      pendingBuildPrIds.clear();
+      launch("build", "build", undefined, () => runIncrementalBuildGate(run, mergedIds));
+    }
+
+    if (inFlight.size > 0) {
+      await Promise.race(Array.from(inFlight.values()).map((job) => job.promise));
+      continue;
+    }
+
+    // Pool drained: nothing runnable right now. Decide whether the mission is
+    // done, blocked, or ready for the runtime acceptance gate.
+    if (shouldRunRuntimeAcceptance(run)) {
+      acceptanceAttempts += 1;
+      if (acceptanceAttempts > 6) {
+        appendEvent(run, "Runtime acceptance failed repeatedly; stopping the scheduler pool for MasterMind/human review", "warning");
+        outcome = "acceptance_exhausted";
+        break;
+      }
+      const acceptance = await runRuntimeAcceptanceGate(run);
+      if (acceptance.ok) {
+        completeMission(run, "Scheduler completed mission: required implementation PRs approved and runtime acceptance passed");
+        outcome = "complete";
+        break;
+      }
+      // Findings were routed back as revisions; keep the pool running.
+      continue;
+    }
+
+    const executedTaskIds = getCompletedTaskIds(run);
+    if (run.state.tasks.some((task) => !executedTaskIds.has(task.id))) {
+      outcome = "blocked_waiting_dependencies";
+      break;
+    }
+    outcome = "idle";
+    break;
+  }
+
+  return { outcome, jobsCompleted };
+}
+
 export function isRecoverableReviewFailure(result: unknown) {
   const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
   return record.error === "merge_failed";
@@ -245,22 +423,14 @@ export async function runAutopilot(run: MissionRun, cycles = 300, source: "manua
   }
 
   run.autopilotActive = true;
-  appendEvent(run, `${source === "automatic" ? "Automatic" : "Manual"} autopilot scheduler started`, "info");
-  const turns = [];
+  appendEvent(run, `${source === "automatic" ? "Automatic" : "Manual"} autopilot started the continuous scheduler pool`, "info");
   try {
-    for (let index = 0; index < cycles; index += 1) {
-      const turn = await runSchedulerTurn(run);
-      turns.push(turn);
-      if (turn.kind === "idle" || turn.kind === "complete" || turn.kind === "blocked_waiting_dependencies") {
-        break;
-      }
-    }
-
-    appendEvent(run, `${source === "automatic" ? "Automatic" : "Manual"} autopilot completed ${turns.length} scheduler wave${turns.length === 1 ? "" : "s"}`, "success");
+    const pool = await runMissionPool(run);
+    appendEvent(run, `${source === "automatic" ? "Automatic" : "Manual"} autopilot pool finished (${pool.jobsCompleted} job${pool.jobsCompleted === 1 ? "" : "s"}, ${pool.outcome})`, "success");
     return {
       ok: true,
-      cycles: turns.length,
-      turns,
+      cycles: pool.jobsCompleted,
+      turns: [{ ok: true, kind: pool.outcome, result: pool }],
       summary: runSummary(run)
     };
   } finally {

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { writeStateSnapshot } from "@orvix/core";
 import { isQwenConfigured, QwenClient, withQwenUsageRun } from "@orvix/qwen";
@@ -36,13 +36,13 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
 
   if (projectType === "nextjs" || projectType === "react-vite" || projectType === "express-api" || projectType === "node-cli") {
     if (!existsSync(resolve(repoDir, "node_modules"))) {
-      checks.push(runCommandCheck(repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
+      checks.push(await runCommandCheck(repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
     }
-    checks.push(runCommandCheck(repoDir, "npm run build", ["run", "build"]));
+    checks.push(await runCommandCheck(repoDir, "npm run build", ["run", "build"]));
   }
 
   if (projectType === "python") {
-    checks.push(runCommandCheck(repoDir, "python src/main.py", ["src/main.py"], "python"));
+    checks.push(await runCommandCheck(repoDir, "python src/main.py", ["src/main.py"], "python"));
   }
 
   const pageSamples: Array<{ route: string; ok: boolean; textSnippet: string }> = [];
@@ -148,26 +148,40 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
     return { ok, checks, findings };
   }
 
+  run.mainNeedsFixes = true;
   routeRuntimeFindingsForRevision(run, findings);
   writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
   broadcast(run, "state", run.state);
   return { ok, checks, findings };
 }
 
+/**
+ * Async so a 2-minute npm install/build does not block the event loop —
+ * with the work-pool scheduler, agent executions and reviews keep running
+ * while a build check is in progress.
+ */
 export function runCommandCheck(cwd: string, name: string, args: string[], command = "npm") {
-  try {
-    const output = execFileSync(command, args, {
+  return new Promise<{ name: string; ok: boolean; output: string }>((resolvePromise) => {
+    const child = spawn(command, args, {
       cwd,
-      encoding: "utf8",
-      timeout: 120000,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 120000
     });
-    return { name, ok: true, output: output.slice(-2000) };
-  } catch (error) {
-    const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string; message?: string };
-    const output = `${String(failure.stdout ?? "")}\n${String(failure.stderr ?? "")}\n${failure.message ?? ""}`.trim();
-    return { name, ok: false, output: output.slice(-4000) };
-  }
+    let output = "";
+    let spawnError: Error | undefined;
+    child.on("error", (error) => { spawnError = error; });
+    child.stdout.on("data", (chunk) => { output += String(chunk); });
+    child.stderr.on("data", (chunk) => { output += String(chunk); });
+    child.on("close", (code) => {
+      if (spawnError) {
+        resolvePromise({ name, ok: false, output: `${output}\n${spawnError.message}`.trim().slice(-4000) });
+        return;
+      }
+      resolvePromise(code === 0
+        ? { name, ok: true, output: output.slice(-2000) }
+        : { name, ok: false, output: output.slice(-4000) });
+    });
+  });
 }
 
 export function scanMissionPlaceholders(run: MissionRun) {
@@ -217,14 +231,16 @@ export async function runWebPageSmokeChecks(run: MissionRun) {
   });
 
   let logs = "";
+  let spawnError: Error | undefined;
+  child.on("error", (error) => { spawnError = error; });
   child.stdout.on("data", (chunk) => { logs += String(chunk); });
   child.stderr.on("data", (chunk) => { logs += String(chunk); });
 
   try {
-    const ready = await waitForUrl(`http://127.0.0.1:${port}`, 30000);
-    checks.push({ name: "npm run dev", ok: ready, output: logs.slice(-2000) });
+    const ready = !spawnError && await waitForUrl(`http://127.0.0.1:${port}`, 30000);
+    checks.push({ name: "npm run dev", ok: ready, output: (spawnError ? `spawn error: ${spawnError.message}\n` : "") + logs.slice(-2000) });
     if (!ready) {
-      findings.push(`Development server did not become reachable. Logs: ${logs.slice(-800)}`);
+      findings.push(`Development server did not become reachable. Logs: ${spawnError ? spawnError.message : logs.slice(-800)}`);
       return { checks, findings, pageSamples };
     }
 
@@ -397,15 +413,17 @@ export async function runIncrementalBuildGate(run: MissionRun, mergedPrIds: numb
   appendEvent(run, "Runtime QA started incremental build check on main after merge wave", "info");
   const checks: RuntimeAcceptanceResult["checks"] = [];
   if (!existsSync(resolve(workspace.repoDir, "node_modules"))) {
-    checks.push(runCommandCheck(workspace.repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
+    checks.push(await runCommandCheck(workspace.repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
   }
-  checks.push(runCommandCheck(workspace.repoDir, "npm run build", ["run", "build"]));
+  checks.push(await runCommandCheck(workspace.repoDir, "npm run build", ["run", "build"]));
 
   const failed = checks.filter((check) => !check.ok);
   if (failed.length === 0) {
+    run.mainNeedsFixes = false;
     appendEvent(run, "Incremental build check passed on main", "success");
     return { ok: true, checks };
   }
+  run.mainNeedsFixes = true;
 
   const findings = failed.map((check) => `${check.name} failed after merge: ${check.output.slice(0, 600)}`);
   const mergedPrs = run.state.pullRequests.filter((pr) => mergedPrIds.includes(pr.id));

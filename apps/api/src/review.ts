@@ -110,6 +110,15 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
     };
   }
 
+  if (trySupersedeEmptyDiffPr(run, pr)) {
+    return {
+      ok: true,
+      pr,
+      approved: true,
+      superseded: true
+    };
+  }
+
   const attemptCount = getReviewAttemptCount(run, pr.id);
   if (attemptCount >= reviewAttemptLimit) {
     const result = escalatePullRequestReview(run, pr, attemptCount);
@@ -205,13 +214,26 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
       reviewAttempt: attemptCount + 1,
       reviewAttemptLimit,
       organization: run.state.organization,
-      agents: run.state.agents,
-      tasks: run.state.tasks,
-      pullRequests: run.state.pullRequests,
+      // Token diet: the reviewer judges this PR's diff against the map and
+      // its task; other agents/tasks/PRs only matter as a roster.
+      agents: run.state.agents.map((agent) => ({ id: agent.id, name: agent.name, role: agent.role })) as never,
+      tasks: run.state.tasks.map((task) => task.branch === pr.branch ? task : {
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        branch: task.branch,
+        ownerAgentId: task.ownerAgentId
+      }) as never,
+      pullRequests: run.state.pullRequests.map((candidate) => candidate.id === pr.id ? candidate : {
+        id: candidate.id,
+        status: candidate.status,
+        ownerAgentId: candidate.ownerAgentId,
+        branch: candidate.branch
+      }) as never,
       orvixMap: orvixMapContext(run),
       orvixBook: {
-        entries: run.state.bookEntries.slice(-40),
-        signals: run.state.agentSignals.slice(-40),
+        entries: run.state.bookEntries.slice(-15),
+        signals: run.state.agentSignals.slice(-15),
         ownershipIndex: run.state.ownershipIndex
       }
     }))
@@ -253,7 +275,7 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
 
     updateReviewedPullRequest(run, pr, "Approved", "Approved", decision);
     appendEvent(run, `Critic Council approved and merged PR #${pr.id}: ${decision.summary}`, "success");
-    syncOpenBranchesAfterMerge(run, pr);
+    syncOpenBranchesAfterMerge(run, pr, changedFilesFromDiff(diff.output));
   } else {
     updateReviewedPullRequest(run, pr, "Changes requested", "Requested changes", decision);
     run.state = {
@@ -322,6 +344,42 @@ export function createMockReviewDecision(pr: PullRequest, diff: string): PullReq
     comments: ["Diff contains committed workspace evidence.", "Acceptance criteria are represented in the delivery note."],
     risks: []
   };
+}
+
+/**
+ * A PR whose branch has an empty diff against main is already fully
+ * represented there — its work landed via earlier merges or branch syncs.
+ * Re-reviewing or revising it can only loop (the agent has nothing left to
+ * change), so MasterMind approves it as superseded instead of burning agent
+ * sessions. Never applies while main needs fixes: after a failed build gate
+ * or runtime acceptance, an empty-diff PR may belong to the owner who still
+ * owes a fix commit, and superseding it would orphan the break.
+ */
+export function trySupersedeEmptyDiffPr(run: MissionRun, pr: PullRequest) {
+  if (run.mainNeedsFixes) return false;
+  if (getReviewAttemptCount(run, pr.id) < 1) return false;
+  const exists = branchExists(workspaceOf(run), pr.branch);
+  if (!exists.ok || exists.tool !== "branch_exists" || !exists.exists) return false;
+  const diff = getBranchDiff(workspaceOf(run), pr.branch, "main");
+  if (!diff.ok || diff.tool !== "get_diff") return false;
+  if (changedFilesFromDiff(diff.output).length > 0) return false;
+
+  const decision: PullRequestReviewDecision = {
+    decision: "approve",
+    summary: `PR #${pr.id} is superseded: its branch has no remaining diff against main, so this work already landed.`,
+    comments: ["MasterMind approved this PR as superseded instead of requesting another revision of already-merged work."],
+    risks: []
+  };
+  updateReviewedPullRequest(run, pr, "Approved", "Approved", decision);
+  appendEvent(run, `MasterMind approved PR #${pr.id} as superseded (empty diff against a green main)`, "success");
+  addReasoningArtifact(run, {
+    kind: "pr_review",
+    status: "completed",
+    content: JSON.stringify({ pr, decision, superseded: true })
+  });
+  writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+  broadcast(run, "state", run.state);
+  return true;
 }
 
 export function updateReviewedPullRequest(
@@ -395,7 +453,7 @@ export function routeMergeFailureToMasterMind(run: MissionRun, pr: PullRequest, 
   appendEvent(run, `MasterMind routed merge conflict on PR #${pr.id} to ${pr.ownerName}`, "warning");
 }
 
-export function syncOpenBranchesAfterMerge(run: MissionRun, mergedPr: PullRequest) {
+export function syncOpenBranchesAfterMerge(run: MissionRun, mergedPr: PullRequest, mergedFiles: string[] = []) {
   const openPrs = run.state.pullRequests.filter((pr) =>
     pr.id !== mergedPr.id &&
     pr.status !== "Approved" &&
@@ -408,6 +466,19 @@ export function syncOpenBranchesAfterMerge(run: MissionRun, mergedPr: PullReques
     const owner = run.state.agents.find((agent) => agent.id === pr.ownerAgentId);
     const task = run.state.tasks.find((candidate) => candidate.branch === pr.branch && candidate.ownerAgentId === pr.ownerAgentId);
     if (!owner || !task) continue;
+
+    // Every merge used to trigger a sync of every open branch — N agents meant
+    // N-1 extra merges per landing, cascading into conflict churn. Only sync
+    // branches that actually consume the merged work: their task depends on
+    // the merged agent, or they touch the same files (getBranchDiff is a
+    // three-dot diff, so an unsynced branch still reviews correctly).
+    if (mergedFiles.length > 0 && !task.dependsOnAgentIds.includes(mergedPr.ownerAgentId)) {
+      const branchDiff = getBranchDiff(workspaceOf(run), pr.branch, "main");
+      if (branchDiff.ok && branchDiff.tool === "get_diff") {
+        const branchFiles = changedFilesFromDiff(branchDiff.output);
+        if (!branchFiles.some((file) => mergedFiles.includes(file))) continue;
+      }
+    }
 
     const workspace = agentTaskWorkspace(run, owner, task);
     if ("ok" in workspace && !workspace.ok) {

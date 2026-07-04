@@ -79,6 +79,8 @@ export type MissionRun = {
   stepTimer?: NodeJS.Timeout;
   autopilotActive?: boolean;
   autoAutopilotStarted?: boolean;
+  /** True while main needs fix commits (build gate or runtime acceptance failed); blocks superseding empty-diff PRs. */
+  mainNeedsFixes?: boolean;
   qwenPlanningComplete?: boolean;
   metrics: RunMetrics;
 };
