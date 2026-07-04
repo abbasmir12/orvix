@@ -408,6 +408,8 @@ export type AgentSessionInput = {
   planRepair?: unknown;
   orvixMap?: unknown;
   mapWorkPacket?: unknown;
+  /** This agent's skill charter (from AGENTS.md): specialty rules and standards it must apply. */
+  agentSkills?: unknown;
   revision?: boolean;
   maxTurns: number;
   maxToolCalls: number;
@@ -452,7 +454,8 @@ export function createAgentSessionMessages(input: AgentSessionInput): ChatMessag
         agentIdentity: {
           whoYouAre: input.agent,
           yourWork: input.task,
-          instruction: "Own your domain. Coordinate through Orvix Book. Continue with explicit assumptions when contracts are missing."
+          yourSkills: input.agentSkills,
+          instruction: "Own your domain and apply your skill charter. Coordinate through Orvix Book. Continue with explicit assumptions when contracts are missing."
         },
         organizationContext: {
           organization: input.organization,

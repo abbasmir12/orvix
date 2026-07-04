@@ -40,6 +40,7 @@ import {
 import { normalizeBookEntryType, normalizeBookPriority, planningBookContext, postBookEntry } from "./book.js";
 import { fetchUrlForAgent, researchWeb } from "./research.js";
 import { startAutomaticAutopilot } from "./scheduler.js";
+import { publishAgentsMd } from "./agentSkills.js";
 
 export function planningResearchContext(run: MissionRun) {
   for (const artifact of [...run.reasoningArtifacts].reverse()) {
@@ -494,6 +495,7 @@ export async function bootstrapQwenReasoning(run: MissionRun) {
   });
   appendEvent(run, "Release Marshal deferred final report until reviewed work exists", "info");
 
+  publishAgentsMd(run);
   appendEvent(run, "Qwen planning complete; automatic scheduler is starting agent execution", "success");
   run.qwenPlanningComplete = true;
   writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);

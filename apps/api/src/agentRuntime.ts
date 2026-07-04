@@ -36,6 +36,7 @@ import {
   workspaceOf,
   type MissionRun
 } from "./run.js";
+import { deriveAgentSkills } from "./agentSkills.js";
 import { getBookContext, inferTopics, markSignalRead, normalizeBookEntryType, postBookEntry } from "./book.js";
 import { envPositiveInt } from "./envConfig.js";
 import { fetchUrlForAgent, researchWeb } from "./research.js";
@@ -307,7 +308,14 @@ function broadcastAgentTurn(
   agent: Agent,
   task: SimulationState["tasks"][number],
   turn: number,
-  payload: { kind: "note" | "tool" | "harness"; tool?: string; path?: string; ok?: boolean; detail?: string }
+  payload: {
+    kind: "note" | "tool" | "harness" | "compaction";
+    tool?: string;
+    path?: string;
+    ok?: boolean;
+    detail?: string;
+    context?: { promptTokens: number; windowTokens: number; percent: number };
+  }
 ) {
   broadcast(run, "agent_turn", {
     missionId: run.id,
@@ -367,6 +375,44 @@ function implementationTaskRequiresEvidence(task?: SimulationState["tasks"][numb
  * Harness bookkeeping (auto-commit/auto-PR of the agent's own work) is
  * labelled as such; Orvix never writes implementation content itself.
  */
+/**
+ * Deterministic context compaction for a running agent session. Chat sessions
+ * re-send the full message history every turn, and old read_file/diff tool
+ * outputs (up to ~6k chars each) are the bulk of it. When context crosses the
+ * compaction threshold, older turns' tool results and narration are truncated
+ * to stubs in place — message structure (assistant tool_calls ↔ tool replies)
+ * stays intact, so the API contract is preserved. The last `keepRecentTurns`
+ * assistant turns are left untouched: that is the agent's working memory.
+ */
+export function compactSessionMessages(messages: ChatMessage[], keepRecentTurns = 2) {
+  let assistantSeen = 0;
+  let cutoff = messages.length;
+  for (let index = messages.length - 1; index >= 2; index -= 1) {
+    if (messages[index].role === "assistant") {
+      assistantSeen += 1;
+      if (assistantSeen >= keepRecentTurns) {
+        cutoff = index;
+        break;
+      }
+    }
+  }
+
+  let compacted = 0;
+  for (let index = 2; index < cutoff; index += 1) {
+    const message = messages[index];
+    const content = typeof message.content === "string" ? message.content : "";
+    if (content.length <= 300) continue;
+    if (message.role === "tool") {
+      message.content = `${content.slice(0, 220)}… [compacted: full result was ${content.length} chars; re-read the file if you need it]`;
+      compacted += 1;
+    } else if (message.role === "assistant") {
+      message.content = `${content.slice(0, 200)}… [compacted]`;
+      compacted += 1;
+    }
+  }
+  return compacted;
+}
+
 async function runAgentSession(
   run: MissionRun,
   agent: Agent,
@@ -429,6 +475,7 @@ async function runAgentSession(
     reviewFeedback: context.reviewFeedback,
     orvixMap: orvixMapContext(run),
     mapWorkPacket: mapWorkPacketForAgent(run, agent.id, task.id),
+    agentSkills: deriveAgentSkills(run, agent, task.id).charter,
     revision: context.revision,
     maxTurns,
     maxToolCalls
@@ -441,11 +488,31 @@ async function runAgentSession(
   let totalToolCalls = 0;
   let consecutiveFailures = 0;
   let nudged = false;
+  let wrapUpNudged = false;
   let turn = 0;
+  const windowTokens = envPositiveInt("QWEN_CONTEXT_WINDOW_TOKENS", 65536, 2097152);
+  const compactAtPercent = envPositiveInt("QWEN_COMPACT_AT_PERCENT", 80, 99);
 
   for (; turn < maxTurns; turn += 1) {
     const response = await qwen.agentSessionTurn(messages, allowedTools, { requireTool: turn === 0 });
     reasoningContent = response.reasoningContent ?? reasoningContent;
+
+    const promptTokens = response.usage?.promptTokens ?? 0;
+    const contextPercent = Math.min(999, Math.round((promptTokens / windowTokens) * 100));
+    const contextInfo = { promptTokens, windowTokens, percent: contextPercent };
+    if (contextPercent >= compactAtPercent) {
+      const compacted = compactSessionMessages(messages);
+      if (compacted > 0) {
+        appendEvent(run, `${agent.name} context at ${contextPercent}% of ${windowTokens} tokens; compacted ${compacted} older session messages`, "info");
+        broadcastAgentTurn(run, agent, task, turn, { kind: "compaction", detail: `compacted ${compacted} messages`, context: contextInfo });
+      } else if (!wrapUpNudged && contextPercent >= 95) {
+        wrapUpNudged = true;
+        messages.push({
+          role: "user",
+          content: "Context window is nearly full and cannot be compacted further. Wrap up now: commit_changes and open_pr with what you have, noting any remaining gaps in the PR summary."
+        });
+      }
+    }
     messages.push({
       role: "assistant",
       content: response.content ?? "",
@@ -455,7 +522,7 @@ async function runAgentSession(
     const narration = response.content?.trim();
     if (narration) {
       transcript.push({ type: "observation", text: narration.slice(0, 500) });
-      broadcastAgentTurn(run, agent, task, turn, { kind: "note", detail: narration.slice(0, 300) });
+      broadcastAgentTurn(run, agent, task, turn, { kind: "note", detail: narration.slice(0, 300), context: contextInfo });
     }
 
     const calls = response.nativeToolCalls ?? [];
