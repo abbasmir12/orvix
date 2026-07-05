@@ -323,9 +323,13 @@ export async function reviewNextPullRequest(run: MissionRun) {
 }
 
 export function isNonBlockingReviewerPr(run: MissionRun, pr: PullRequest) {
+  // Classify by the OWNER's identity only. PR titles are agent-written free
+  // text — "fix: address reviewer feedback" once got an implementation PR
+  // classified as a reviewer PR, making it invisible to revisions, reviews,
+  // and supersede at once (a hard deadlock).
   const agent = run.state.agents.find((candidate) => candidate.id === pr.ownerAgentId);
-  const text = `${agent?.name ?? ""} ${agent?.role ?? ""} ${pr.ownerName} ${pr.title}`.toLowerCase();
-  return /runtime qa|qa reviewer|quality|critic|reviewer|validator|test reviewer/.test(text);
+  const text = `${agent?.name ?? ""} ${agent?.role ?? ""} ${pr.ownerName}`.toLowerCase();
+  return /runtime qa|qa reviewer|quality gate|critic|reviewer|validator|test reviewer/.test(text);
 }
 
 export function createMockReviewDecision(pr: PullRequest, diff: string): PullRequestReviewDecision {
@@ -357,7 +361,10 @@ export function createMockReviewDecision(pr: PullRequest, diff: string): PullReq
  */
 export function trySupersedeEmptyDiffPr(run: MissionRun, pr: PullRequest) {
   if (run.mainNeedsFixes) return false;
-  if (getReviewAttemptCount(run, pr.id) < 1) return false;
+  // "Reviewed at least once" gate: attempt counts are parsed from artifact
+  // content, which disk snapshots summarize away — after a resume they read
+  // zero. PR comments survive snapshots, so either signal counts.
+  if (getReviewAttemptCount(run, pr.id) < 1 && pr.comments.length === 0) return false;
   const exists = branchExists(workspaceOf(run), pr.branch);
   if (!exists.ok || exists.tool !== "branch_exists" || !exists.exists) return false;
   const diff = getBranchDiff(workspaceOf(run), pr.branch, "main");

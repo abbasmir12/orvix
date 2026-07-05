@@ -312,13 +312,18 @@ export async function runMissionPool(run: MissionRun) {
     const revisionCap = schedulerConcurrency(run, "revision");
     for (const pr of run.state.pullRequests) {
       if (inFlight.size >= totalLimit || kindCount("revision") >= revisionCap) break;
-      if (pr.status !== "Changes requested" || isNonBlockingReviewerPr(run, pr)) continue;
+      if (pr.status !== "Changes requested") continue;
+      // Supersede applies to every changes-requested PR — including
+      // non-blocking reviewer PRs, whose approval unblocks tasks that
+      // declared a dependency on their owner.
+      if (busyAgents.has(pr.ownerAgentId)) continue;
+      if (trySupersedeEmptyDiffPr(run, pr)) continue;
+      if (isNonBlockingReviewerPr(run, pr)) continue;
       if (getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit) continue;
       const key = `revision:${pr.id}`;
-      if (inFlight.has(key) || busyAgents.has(pr.ownerAgentId) || failedOut(key)) continue;
+      if (inFlight.has(key) || failedOut(key)) continue;
       const task = run.state.tasks.find((candidate) => candidate.branch === pr.branch && candidate.ownerAgentId === pr.ownerAgentId);
       if (!task) continue;
-      if (trySupersedeEmptyDiffPr(run, pr)) continue;
       busyAgents.add(pr.ownerAgentId);
       appendEvent(run, `MasterMind routed PR #${pr.id} back to ${pr.ownerName} for revision`, "info");
       launch(key, "revision", pr.ownerAgentId, () => executeAgentTask(run, pr.ownerAgentId, { taskId: task.id, revision: true }));
