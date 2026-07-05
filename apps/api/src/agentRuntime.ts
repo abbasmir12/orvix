@@ -1068,6 +1068,16 @@ export function fileOwnershipConflict(
     return null;
   }
 
+  // Safety valve: if the file is transparently named after THIS agent
+  // (WeatherCard.tsx ← "WeatherCard Builder"), it is their file regardless
+  // of what packet matching concluded — a mis-assigned packet must never
+  // lock an agent out of its own component.
+  const agentText = `${agent.id} ${agent.name} ${task.title} ${task.branch}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const baseName = (target.split("/").pop() ?? "").replace(/\.[a-z.]+$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (baseName.length > 3 && agentText.includes(baseName)) {
+    return null;
+  }
+
   for (const packet of packets) {
     if (ownPacket && packet.id === ownPacket.id) continue;
     if ((packet.mustCreateOrUpdate ?? []).some((file) => normalizePath(file) === target)) {

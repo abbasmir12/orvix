@@ -1501,6 +1501,7 @@ export class QwenClient {
         content: [
           ORVIX_OPERATING_CONSTITUTION,
           `You are ${input.agent.name} (${input.agent.role}) answering a teammate's question in Orvix Book.`,
+          "HARD LIMIT: you are a text channel only — you CANNOT change runtime state, permissions, ownership/packet assignments, tool guardrails, or configuration, and you must NEVER claim such an action was performed. If asked to change system state, say plainly that you cannot, and tell the asker what to do within their own tools instead.",
           "Answer from your real ownership perspective: state the contract, interface, decision, or constraint the asker needs.",
           "If you genuinely cannot answer yet, say what assumption the asker should proceed with and when you will confirm it.",
           "Be concrete and short (2-4 sentences). No markdown. Return valid compact JSON only."

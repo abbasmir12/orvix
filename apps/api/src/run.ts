@@ -274,24 +274,52 @@ export function orvixMapContext(run: MissionRun): OrvixMap | null {
   return null;
 }
 
+/**
+ * Score-based packet assignment. The old first-match logic was a real
+ * production bug: with many similar agents ("SearchBar Builder",
+ * "WeatherCard Builder", ...), one packet's generic suggestedAgentRole
+ * ("UI Component") matched EVERY UI agent, so all of them got the first
+ * UI packet — and the ownership gate then blocked each agent from writing
+ * its own files. Distinctive tokens (packet id, owned topics, target file
+ * names) dominate the score; generic role text barely counts.
+ */
 export function mapWorkPacketForAgent(run: MissionRun, agentId: string, taskId?: string) {
   const map = orvixMapContext(run);
   if (!map) return null;
   const agent = run.state.agents.find((candidate) => candidate.id === agentId);
   const task = taskId ? run.state.tasks.find((candidate) => candidate.id === taskId) : undefined;
-  const haystack = `${agent?.id ?? ""} ${agent?.name ?? ""} ${agent?.role ?? ""} ${task?.title ?? ""} ${task?.acceptanceCriteria?.join(" ") ?? ""}`.toLowerCase();
   const packets = map.agentWorkPackets.filter((packet) => packet && typeof packet === "object");
-  const matchesHaystack = (value: unknown) => {
-    const text = String(value ?? "").toLowerCase().trim();
-    return text.length > 0 && haystack.includes(text);
+  if (packets.length === 0) return null;
+
+  const normalize = (value: unknown) => String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const haystack = ` ${normalize(`${agent?.id ?? ""} ${agent?.name ?? ""} ${agent?.role ?? ""} ${task?.title ?? ""} ${task?.branch ?? ""}`)} `;
+  const genericTokens = new Set(["packet", "work", "agent", "builder", "component", "components", "specialist", "developer", "task", "feature"]);
+  const tokenHits = (value: unknown, weight: number) => {
+    let score = 0;
+    for (const token of normalize(value).split(" ")) {
+      if (token.length > 3 && !genericTokens.has(token) && haystack.includes(` ${token}`)) score += weight;
+      else if (token.length > 3 && !genericTokens.has(token) && haystack.includes(token)) score += weight;
+    }
+    return score;
   };
-  return packets.find((packet) =>
-    matchesHaystack(packet.id) ||
-    matchesHaystack(packet.suggestedAgentRole) ||
-    (packet.owns ?? []).some(matchesHaystack)
-  ) ?? packets.find((packet) =>
-    String(packet.suggestedAgentRole ?? "").toLowerCase().split(/\s+/).some((word) => word.length > 4 && haystack.includes(word))
-  ) ?? null;
+
+  let best: (typeof packets)[number] | null = null;
+  let bestScore = 0;
+  for (const packet of packets) {
+    let score = tokenHits(packet.id, 5);
+    for (const owned of packet.owns ?? []) score += tokenHits(owned, 2);
+    for (const file of packet.mustCreateOrUpdate ?? []) {
+      const base = String(file).split("/").pop()?.replace(/\.[a-z.]+$/i, "") ?? "";
+      score += tokenHits(base, 3);
+    }
+    const role = normalize(packet.suggestedAgentRole);
+    if (role && haystack.includes(role)) score += 1;
+    if (score > bestScore) {
+      bestScore = score;
+      best = packet;
+    }
+  }
+  return bestScore > 0 ? best : null;
 }
 
 export function scheduleOrchestratorStep(run: MissionRun) {

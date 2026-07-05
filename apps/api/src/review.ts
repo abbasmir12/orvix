@@ -36,6 +36,10 @@ export function changedFilesFromDiff(diff: string) {
 export function implementationTaskRequiresSource(task?: SimulationState["tasks"][number]) {
   if (!task) return true;
   const text = `${task.title} ${task.filesLikelyAffected.join(" ")} ${task.acceptanceCriteria.join(" ")}`.toLowerCase();
+  // Documentation IS the implementation for docs workstreams: a README
+  // agent's markdown-only PR is real work — the reviewer judges its
+  // content, not its file extension.
+  if (/readme|documentation|docs|user guide|manual|changelog/.test(text) && !/component|route|api endpoint|canvas|playable/.test(text)) return false;
   return /src\/|app\/|component|ui|game|loop|state|style|css|test|config|package|route|api|implementation|playable|canvas/.test(text);
 }
 
