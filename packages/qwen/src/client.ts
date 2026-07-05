@@ -805,13 +805,23 @@ export class QwenClient {
         // on hidden reasoning tokens and return an empty answer instead of
         // an error — indistinguishable from success at the HTTP level, but
         // useless. Treat it the same as a failed model: try the next one.
+        const finishReason = String((payload.choices?.[0] as { finish_reason?: string } | undefined)?.finish_reason ?? "unknown");
         const next = modelChain.length > 1 ? firstAvailableModelIndex(modelChain, modelIndex + 1) : -1;
-        if (next !== -1) {
-          console.warn(`[qwen] ${model} returned empty content; switching to ${modelChain[next]} for role "${role}"`);
+        if (next !== -1 && modelChain[next] !== model) {
+          console.warn(`[qwen] ${model} returned empty content (finish: ${finishReason}); switching to ${modelChain[next]} for role "${role}"`);
           modelIndex = next;
           continue;
         }
-        throw new Error(`Qwen response did not include message content (model: ${model}).`);
+        // Single-model chain: an occasional empty answer (thought-only
+        // output, malformed tool call) is sampling noise — retry the same
+        // model instead of killing an entire multi-turn agent session.
+        if (transientAttempt < maxRequestAttempts - 1) {
+          transientAttempt += 1;
+          console.warn(`[qwen] ${model} returned empty content (finish: ${finishReason}); retrying (${transientAttempt})`);
+          await sleep(retryDelayMs(transientAttempt));
+          continue;
+        }
+        throw new Error(`Qwen response did not include message content (model: ${model}, finish: ${finishReason}).`);
       }
 
       const rawUsage = payload.usage && typeof payload.usage === "object" ? payload.usage as Record<string, unknown> : {};
