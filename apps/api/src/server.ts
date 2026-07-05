@@ -12,7 +12,7 @@ import { appendEvent, metricsSummary, port, runs, runSummary, writeSse, type Mis
 import { agentName, getBookContext, postBookEntry } from "./book.js";
 import { createRun } from "./planning.js";
 import { executeAgentTask, executeGitTool, executeNextAgentTask } from "./agentRuntime.js";
-import { reviewNextPullRequest, reviewPullRequest, routeOwnerInstruction } from "./review.js";
+import { masterMindOwnerTriage, reviewNextPullRequest, reviewPullRequest, routeOwnerInstruction } from "./review.js";
 import { runAutopilot, runSchedulerTurn } from "./scheduler.js";
 import { listRunsOnDisk, resumeRun } from "./resume.js";
 
@@ -249,17 +249,27 @@ export const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: "message_required" });
         return;
       }
-      const result = routeOwnerInstruction(run, body.message.trim(), body.toAgentIds ?? []);
-      // If the pool already drained (mission idle/blocked/complete), the
-      // owner's instruction restarts it so reopened PRs get revised now.
-      if (!run.autopilotActive && run.workspace) {
-        void runAutopilot(run, 300, "automatic").catch(() => undefined);
-      }
+      const message = body.message.trim();
+      const result = routeOwnerInstruction(run, message, body.toAgentIds ?? []);
+      const isQuestion = /\?\s*$/.test(message);
+      // No explicit mention on an instruction: wake MasterMind to reason
+      // about who owns the change, delegate through the Book, and reopen
+      // workstreams — then (re)start the pool. With mentions, or for
+      // questions, the deterministic routing above already did the work.
+      void (async () => {
+        if (!isQuestion && result.mentioned.length === 0) {
+          await masterMindOwnerTriage(run, message).catch(() => undefined);
+        }
+        if (!run.autopilotActive && run.workspace) {
+          void runAutopilot(run, 300, "automatic").catch(() => undefined);
+        }
+      })();
       sendJson(response, 200, {
         ok: true,
         entryId: result.entry.id,
         mentioned: result.mentioned,
-        reopenedPrs: result.reopened
+        reopenedPrs: result.reopened,
+        triage: !isQuestion && result.mentioned.length === 0 ? "mastermind" : "direct"
       });
       return;
     }

@@ -466,12 +466,31 @@ export async function runIncrementalBuildGate(run: MissionRun, mergedPrIds: numb
 }
 
 export function hasRuntimeGatePassed(run: MissionRun) {
-  return run.state.bookEntries.some((entry) =>
-    entry.fromAgentId === "mastermind-agent" &&
-    entry.type === "decision" &&
-    entry.topics.includes("runtime") &&
-    entry.topics.includes("acceptance") &&
-    entry.message.includes("Runtime acceptance passed")
-  );
+  // The gate only counts as passed if nothing changed since: an owner
+  // request (or MasterMind delegation of one) AFTER the pass reopens work,
+  // and the reopened mission must re-earn acceptance to complete again.
+  const entries = run.state.bookEntries;
+  let lastPassIndex = -1;
+  let lastOwnerChangeIndex = -1;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (
+      entry.fromAgentId === "mastermind-agent" &&
+      entry.type === "decision" &&
+      entry.topics.includes("runtime") &&
+      entry.topics.includes("acceptance") &&
+      entry.message.includes("Runtime acceptance passed")
+    ) {
+      lastPassIndex = index;
+    }
+    if (
+      (entry.fromAgentId === "owner" && entry.type === "decision") ||
+      (entry.fromAgentId === "mastermind-agent" && entry.topics.includes("owner") && entry.topics.includes("delegation"))
+    ) {
+      lastOwnerChangeIndex = index;
+    }
+  }
+  if (lastPassIndex === -1) return false;
+  return lastOwnerChangeIndex < lastPassIndex;
 }
 

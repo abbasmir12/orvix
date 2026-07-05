@@ -452,6 +452,87 @@ export function routeOwnerInstruction(run: MissionRun, message: string, mentionA
   return { entry, reopened, mentioned: validMentions };
 }
 
+/** Reopens one agent's workstream with an instruction as the review comment; returns the PR id or null. */
+function reopenAgentWorkstream(run: MissionRun, agentId: string, instruction: string) {
+  const pr = run.state.pullRequests.find((candidate) => candidate.ownerAgentId === agentId && candidate.status !== "Queued");
+  if (!pr) return null;
+  run.state = {
+    ...run.state,
+    pullRequests: run.state.pullRequests.map((candidate) => candidate.id === pr.id
+      ? {
+        ...candidate,
+        status: "Changes requested",
+        reviewerStatus: "Requested changes",
+        comments: [...candidate.comments, `Owner request via MasterMind: ${instruction}`].slice(-6)
+      }
+      : candidate),
+    agents: run.state.agents.map((candidate) => candidate.id === agentId && candidate.status === "completed"
+      ? { ...candidate, status: "queued", currentActivity: "Owner change request received", progress: Math.min(candidate.progress, 90) }
+      : candidate)
+  };
+  return pr.id;
+}
+
+/**
+ * Wakes MasterMind as a reasoning agent for an owner request that named no
+ * specific agent — including on a completed mission, where the whole
+ * organization is asleep. MasterMind reads the org state, decides which
+ * agent(s) own the change, posts each a contract in the Orvix Book, and
+ * reopens their workstreams so the scheduler pool revises them. If the
+ * MasterMind call fails, the owner entry stays as global guidance.
+ */
+export async function masterMindOwnerTriage(run: MissionRun, ownerMessage: string) {
+  if (!usesQwenReasoning(run) || !isQwenConfigured()) return { assignments: 0 };
+  appendEvent(run, "MasterMind woke to triage the owner's request", "info");
+  let routing: { summary: string; assignments: Array<{ agentId: string; instruction: string }> };
+  try {
+    routing = await withQwenUsageRun(run.id, () => new QwenClient().routeOwnerRequestJson({
+      mission: run.mission,
+      ownerMessage,
+      agents: run.state.agents.map((agent) => ({ id: agent.id, name: agent.name, role: agent.role, status: agent.status })),
+      tasks: run.state.tasks.map((task) => ({ id: task.id, title: task.title, status: task.status, branch: task.branch, ownerAgentId: task.ownerAgentId })),
+      pullRequests: run.state.pullRequests.map((pr) => ({ id: pr.id, status: pr.status, ownerAgentId: pr.ownerAgentId, branch: pr.branch })),
+      orvixMap: orvixMapContext(run)
+    }));
+  } catch (error) {
+    appendEvent(run, `MasterMind triage failed (${error instanceof Error ? error.message : "unknown"}); owner request stays as global guidance`, "warning");
+    return { assignments: 0 };
+  }
+
+  const valid = (routing.assignments ?? []).filter((assignment) =>
+    run.state.agents.some((agent) => agent.id === assignment.agentId) && assignment.instruction?.trim());
+  const reopened: number[] = [];
+  for (const assignment of valid) {
+    postBookEntry(run, {
+      type: "contract",
+      fromAgentId: "mastermind-agent",
+      toAgentIds: [assignment.agentId],
+      scope: "mission",
+      visibility: "mentioned",
+      topics: ["owner", "delegation", assignment.agentId],
+      priority: "urgent",
+      status: "final",
+      message: `MasterMind routing the owner's request to you: ${assignment.instruction}`
+    });
+    const prId = reopenAgentWorkstream(run, assignment.agentId, assignment.instruction);
+    if (prId !== null) reopened.push(prId);
+  }
+
+  if (reopened.length > 0 && run.state.isComplete) {
+    run.state = { ...run.state, isComplete: false, phase: "executing" };
+  }
+  appendEvent(
+    run,
+    valid.length > 0
+      ? `MasterMind routed the owner's request: ${routing.summary} (${valid.map((a) => a.agentId).join(", ")}${reopened.length > 0 ? `; reopened PR ${reopened.map((id) => `#${id}`).join(", ")}` : ""})`
+      : `MasterMind triaged the owner's request: ${routing.summary || "no code change needed"}`,
+    "success"
+  );
+  writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+  broadcast(run, "state", run.state);
+  return { assignments: valid.length, reopened };
+}
+
 export function updateReviewedPullRequest(
   run: MissionRun,
   pr: PullRequest,

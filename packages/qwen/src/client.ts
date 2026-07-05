@@ -1489,6 +1489,52 @@ export class QwenClient {
     return parseQwenJson<{ message: string }>(await this.answerBookQuestion(input));
   }
 
+  /**
+   * MasterMind triage of a live owner request: decide which agents own the
+   * change, with a concrete instruction each. Used when the owner speaks
+   * without @-mentioning anyone — including after the mission completed.
+   */
+  async routeOwnerRequestJson(input: {
+    mission: string;
+    ownerMessage: string;
+    agents: unknown;
+    tasks: unknown;
+    pullRequests: unknown;
+    orvixMap?: unknown;
+  }) {
+    return parseQwenJson<{
+      summary: string;
+      assignments: Array<{ agentId: string; instruction: string }>;
+    }>(await this.chat([
+      {
+        role: "system",
+        content: [
+          ORVIX_OPERATING_CONSTITUTION,
+          "You are MasterMind, the coordinator of this Orvix agent organization. The human product OWNER just sent a live request.",
+          "Decide which existing agent(s) must act, and write each a concrete, self-contained instruction that fulfils the owner's request.",
+          "Prefer the agent whose work packet/branch owns the affected files. Use multiple assignments only when the request genuinely spans owners.",
+          "If the request needs no code change (a status question, acknowledgement), return an empty assignments array.",
+          "Return valid compact JSON only. No markdown."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          mission: input.mission,
+          ownerRequest: input.ownerMessage,
+          agents: input.agents,
+          tasks: input.tasks,
+          pullRequests: input.pullRequests,
+          orvixMap: input.orvixMap,
+          outputSchema: {
+            summary: "one sentence: how MasterMind is routing this",
+            assignments: [{ agentId: "existing agent id", instruction: "concrete change instruction for that agent" }]
+          }
+        })
+      }
+    ], { role: "planner", json: true, temperature: 0.1 }))
+  }
+
   async runtimeAcceptanceVerdict(input: {
     mission: string;
     productType: string;
