@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   writeStateSnapshot,
   type Agent,
@@ -338,7 +340,7 @@ function broadcastAgentTurn(
     context?: { promptTokens: number; windowTokens: number; percent: number };
   }
 ) {
-  broadcast(run, "agent_turn", {
+  const event = {
     missionId: run.id,
     agentId: agent.id,
     agentName: agent.name,
@@ -347,7 +349,15 @@ function broadcastAgentTurn(
     turn,
     at: new Date().toISOString(),
     ...payload
-  });
+  };
+  broadcast(run, "agent_turn", event);
+  // Persisted so a resumed CLI can restore the live-turns feed, not just
+  // the state snapshot. Failure to append must never break a session.
+  try {
+    appendFileSync(resolve(run.store.runDir, "turns.jsonl"), `${JSON.stringify(event)}\n`);
+  } catch {
+    // best-effort telemetry
+  }
 }
 
 /** Compact, model-facing serialization of a tool result (no giant diffs or file bodies beyond caps). */

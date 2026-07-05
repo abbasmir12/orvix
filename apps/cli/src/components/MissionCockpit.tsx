@@ -27,6 +27,8 @@ type MissionCockpitProps = {
   agentTurns: AgentTurnEvent[];
   metrics: RunMetricsSummary | null;
   commandDraft: string | null;
+  mentionCandidates?: Agent[];
+  mentionIndex?: number;
 };
 
 const fit = (value: string, width: number) => {
@@ -1461,7 +1463,9 @@ function CommandBar({
   mode,
   missionId,
   executionStatus,
-  commandDraft
+  commandDraft,
+  mentionCandidates = [],
+  mentionIndex = 0
 }: {
   activePanel: CockpitPanel;
   expandedPanel: CockpitPanel | null;
@@ -1471,12 +1475,26 @@ function CommandBar({
   missionId: string | null;
   executionStatus: string;
   commandDraft: string | null;
+  mentionCandidates?: Agent[];
+  mentionIndex?: number;
 }) {
   const isLive = mode === "cloud" && Boolean(missionId);
   const promptOpen = commandDraft !== null;
 
   return (
     <Box width={width} borderStyle="round" borderColor={promptOpen ? theme.accent : active ? theme.accent : theme.border} paddingX={1} marginTop={1} flexDirection="column">
+      {promptOpen && mentionCandidates.length > 0 ? (
+        <Box flexDirection="column" marginBottom={0}>
+          <Text color={theme.faint}>@ mention — ↑↓ select · tab/enter insert · MasterMind is always CC'd</Text>
+          {mentionCandidates.map((agent, index) => (
+            <Text key={agent.id}>
+              <Text color={index === mentionIndex ? theme.accentBright : theme.faint}>{index === mentionIndex ? `${glyphs.chevron} ` : "  "}</Text>
+              <Text color={index === mentionIndex ? theme.text : theme.muted} bold={index === mentionIndex}>@{agent.id}</Text>
+              <Text color={theme.faint}>  {fit(agent.name, 24)} {fit(agent.role, Math.max(10, width - 46))}</Text>
+            </Text>
+          ))}
+        </Box>
+      ) : null}
       {promptOpen ? (
         <Text>
           <Text color={theme.accentBright} bold>{glyphs.chevron} </Text>
@@ -1486,7 +1504,7 @@ function CommandBar({
         <Box justifyContent="space-between">
           <Text>
             <Text color={theme.accent}>{glyphs.chevron} </Text>
-            <Text color={theme.muted}>/ command or guidance</Text>
+            <Text color={theme.muted}>/ commands · @ mention an agent · type to talk as owner</Text>
             <Text color={theme.faint}>  ·  tab panels · ←→ tabs · ↑↓ move · enter inspect · e expand · q quit</Text>
           </Text>
           <Text color={isLive ? theme.cloud : theme.faint}>{fit(executionStatus, Math.max(12, Math.min(52, width - 60)))}</Text>
@@ -1513,7 +1531,9 @@ export function MissionCockpit({
   executionStatus,
   agentTurns,
   metrics,
-  commandDraft
+  commandDraft,
+  mentionCandidates,
+  mentionIndex
 }: MissionCockpitProps) {
   const { stdout } = useStdout();
   const width = Math.max(72, stdout.columns ?? 80);
@@ -1550,7 +1570,7 @@ export function MissionCockpit({
       <Box flexDirection="column">
         <TopStatus state={state} width={width} metrics={metrics} />
         <FocusPanel state={state} selectedAgent={selectedAgent} active width={width} agentTurns={agentTurns} />
-        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
       </Box>
     );
   }
@@ -1560,7 +1580,7 @@ export function MissionCockpit({
       <Box flexDirection="column">
         <TopStatus state={state} width={width} metrics={metrics} />
         <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active width={width} />
-        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
       </Box>
     );
   }
@@ -1579,7 +1599,7 @@ export function MissionCockpit({
 	          reasoningArtifacts={reasoningArtifacts}
 	          agentTurns={agentTurns}
 	        />
-        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
       </Box>
     );
   }
@@ -1605,7 +1625,7 @@ export function MissionCockpit({
         reasoningArtifacts={reasoningArtifacts}
         agentTurns={agentTurns}
       />
-      <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
+      <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
     </Box>
   );
 }

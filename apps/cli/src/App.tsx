@@ -312,6 +312,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     resumeId ? { kind: "resume", missionId: resumeId } : { kind: "new", mission }
   );
   const [commandDraft, setCommandDraft] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
   const initialState = useMemo(() => createInitialSimulation(mission), [mission]);
   const [state, setState] = useState(initialState);
   const [stepIndex, setStepIndex] = useState(0);
@@ -355,6 +356,14 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     return headers;
   }, [apiToken]);
   const jsonHeaders = useMemo<Record<string, string>>(() => ({ "Content-Type": "application/json", ...authHeaders }), [authHeaders]);
+  // Agents matching the trailing @token of the prompt draft (mention picker).
+  const mentionQuery = commandDraft !== null ? commandDraft.match(/@([a-z0-9-]*)$/i)?.[1]?.toLowerCase() ?? null : null;
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null) return [];
+    return state.agents
+      .filter((agent) => agent.id.toLowerCase().includes(mentionQuery) || agent.name.toLowerCase().includes(mentionQuery))
+      .slice(0, 6);
+  }, [mentionQuery, state.agents]);
 
   async function runAgentExecution(kind: "next" | "selected" | "review" | "autopilot") {
     if (mode !== "cloud" || !missionId) {
@@ -429,27 +438,29 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     if (!trimmed) return;
 
     if (!trimmed.startsWith("/")) {
-      // Plain text is live mission guidance: it lands in the Orvix Book as an
-      // urgent global note that agents read in their next session/context.
+      // Plain text is the OWNER speaking: it lands in the Orvix Book under
+      // the `owner` identity, MasterMind always CC'd. @agent-id mentions
+      // target specific agents — a mentioned agent with a live workstream
+      // gets its PR reopened so the revision loop applies the request.
       if (mode !== "cloud" || !missionId) {
-        setExecutionStatus("Guidance needs a live cloud mission");
+        setExecutionStatus("Owner messages need a live cloud mission");
         return;
       }
+      const mentionIds = Array.from(trimmed.matchAll(/@([a-z0-9][a-z0-9-]*)/gi)).map((match) => match[1].toLowerCase());
       try {
-        const response = await fetch(`${apiUrl}/missions/${missionId}/book`, {
+        const response = await fetch(`${apiUrl}/missions/${missionId}/owner`, {
           method: "POST",
           headers: jsonHeaders,
-          body: JSON.stringify({
-            type: "decision",
-            fromAgentId: "mastermind-agent",
-            message: `User guidance: ${trimmed}`,
-            scope: "mission",
-            visibility: "global",
-            topics: ["user-guidance"],
-            priority: "high"
-          })
+          body: JSON.stringify({ message: trimmed, toAgentIds: mentionIds })
         });
-        setExecutionStatus(response.ok ? "Guidance posted to Orvix Book — agents will pick it up" : `Guidance failed: ${response.status}`);
+        const result = await response.json() as { ok?: boolean; mentioned?: string[]; reopenedPrs?: number[] };
+        if (!response.ok || !result.ok) {
+          setExecutionStatus(`Owner message failed: ${response.status}`);
+          return;
+        }
+        const target = result.mentioned?.length ? result.mentioned.join(", ") : "MasterMind";
+        const reopened = result.reopenedPrs?.length ? ` · reopened PR ${result.reopenedPrs.map((id) => `#${id}`).join(", ")}` : "";
+        setExecutionStatus(`Owner → ${target} (Book)${reopened}`);
       } catch (error) {
         setExecutionStatus(actionErrorMessage(error, apiUrl));
       }
@@ -562,6 +573,24 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
         setCommandDraft(null);
         return;
       }
+      // @mention picker: while the trailing token is @something, arrows move
+      // the selection and Tab/Enter insert the highlighted agent id.
+      if (mentionCandidates.length > 0) {
+        if (key.upArrow) {
+          setMentionIndex((current) => (current + mentionCandidates.length - 1) % mentionCandidates.length);
+          return;
+        }
+        if (key.downArrow) {
+          setMentionIndex((current) => (current + 1) % mentionCandidates.length);
+          return;
+        }
+        if (key.tab || key.return) {
+          const chosen = mentionCandidates[Math.min(mentionIndex, mentionCandidates.length - 1)];
+          setCommandDraft((current) => (current ?? "").replace(/@[a-z0-9-]*$/i, `@${chosen.id} `));
+          setMentionIndex(0);
+          return;
+        }
+      }
       if (key.return) {
         const line = commandDraft;
         setCommandDraft(null);
@@ -570,16 +599,24 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       }
       if (key.backspace || key.delete) {
         setCommandDraft((current) => (current && current.length > 0 ? current.slice(0, -1) : ""));
+        setMentionIndex(0);
         return;
       }
       if (input && !key.ctrl && !key.meta && !key.tab && !key.upArrow && !key.downArrow && !key.leftArrow && !key.rightArrow) {
         setCommandDraft((current) => `${current ?? ""}${input}`);
+        if (input === "@") setMentionIndex(0);
       }
       return;
     }
 
     if (input === "/") {
       setCommandDraft("/");
+      return;
+    }
+
+    if (input === "@") {
+      setCommandDraft("@");
+      setMentionIndex(0);
       return;
     }
 
@@ -829,8 +866,18 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
         setMissionId(created.missionId);
         const stateResponse = await fetch(`${apiUrl}/missions/${created.missionId}`, { headers: authHeaders, signal: controller.signal });
         if (stateResponse.ok) {
-          const snapshot = await stateResponse.json() as { state?: SimulationState };
+          const snapshot = await stateResponse.json() as { state?: SimulationState; planningStages?: PlanningStageEvent[] };
           if (snapshot.state) setState(snapshot.state);
+          if (snapshot.planningStages?.length) setPlanningStages(snapshot.planningStages);
+        }
+        if (missionTarget.kind === "resume") {
+          // Restore the live-turns feed from the persisted turn log so the
+          // cockpit comes back exactly as it was, not just the state header.
+          const turnsResponse = await fetch(`${apiUrl}/missions/${created.missionId}/turns`, { headers: authHeaders, signal: controller.signal });
+          if (turnsResponse.ok) {
+            const persisted = await turnsResponse.json() as { turns?: AgentTurnEvent[] };
+            if (persisted.turns?.length) setAgentTurns(persisted.turns.slice(-300));
+          }
         }
         const reasoningResponse = await fetch(`${apiUrl}/missions/${created.missionId}/reasoning`, {
           headers: authHeaders,
@@ -978,6 +1025,8 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
             agentTurns={agentTurns}
             metrics={metrics}
             commandDraft={commandDraft}
+            mentionCandidates={mentionCandidates}
+            mentionIndex={mentionIndex}
           />
         )}
       </Box>

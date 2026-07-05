@@ -193,7 +193,11 @@ export function normalizeBookPriority(value: unknown): OrvixBookPriority {
   return allowed.includes(value as OrvixBookPriority) ? value as OrvixBookPriority : "normal";
 }
 
+/** The human product owner posting through the CLI prompt bar. */
+export const OWNER_AGENT_ID = "owner";
+
 export function agentName(run: MissionRun, agentId: string) {
+  if (agentId === OWNER_AGENT_ID) return "Owner (human)";
   return run.state.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
 }
 

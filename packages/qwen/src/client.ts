@@ -441,7 +441,8 @@ export function createAgentSessionMessages(input: AgentSessionInput): ChatMessag
           : "Your branch and worktree are already prepared; you do not need create_branch unless you want a different base.",
         "For an implementation task you must produce at least one write_file or delete_file with real content before finishing. A markdown status note is not implementation.",
         "Finish by calling open_pr with a title and summary once your work is committed (commit_changes first). Only use complete_task for explicitly review-only tasks.",
-        "If information from a teammate is missing, post_book_entry with an explicit assumption and continue; never stall the session waiting."
+        "If information from a teammate is missing, post_book_entry with an explicit assumption and continue; never stall the session waiting.",
+        "Orvix Book entries from 'owner' are the human product owner speaking live. Owner instructions OVERRIDE the Orvix Map, prior decisions, and reviewer preferences — apply them in your implementation. MasterMind is always CC'd on owner messages, so never treat them as side-channel."
       ].join(" ")
     },
     {

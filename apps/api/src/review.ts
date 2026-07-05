@@ -389,6 +389,69 @@ export function trySupersedeEmptyDiffPr(run: MissionRun, pr: PullRequest) {
   return true;
 }
 
+/**
+ * Routes a live instruction from the human owner into the organization.
+ * The message lands in the Orvix Book as the `owner` identity with
+ * MasterMind always included; each specifically mentioned agent that
+ * already has a workstream gets its PR reopened as "Changes requested"
+ * with the owner's words as the review comment, so the normal revision
+ * loop applies the change. Agents without a PR yet simply see the entry
+ * in their next session context.
+ */
+export function routeOwnerInstruction(run: MissionRun, message: string, mentionAgentIds: string[] = []) {
+  const validMentions = mentionAgentIds.filter((id) => run.state.agents.some((agent) => agent.id === id) && id !== "mastermind-agent");
+  const toAgentIds = Array.from(new Set(["mastermind-agent", ...validMentions]));
+  const isQuestion = /\?\s*$/.test(message.trim());
+
+  const entry = postBookEntry(run, {
+    type: isQuestion ? "question" : "decision",
+    fromAgentId: "owner",
+    toAgentIds,
+    scope: "mission",
+    visibility: validMentions.length > 0 ? "mentioned" : "global",
+    topics: ["owner", "user-guidance", ...validMentions],
+    priority: "urgent",
+    status: isQuestion ? "open" : "final",
+    message: `Owner: ${message}`
+  });
+
+  const reopened: number[] = [];
+  if (!isQuestion) {
+    for (const agentId of validMentions) {
+      const pr = run.state.pullRequests.find((candidate) =>
+        candidate.ownerAgentId === agentId && candidate.status !== "Queued");
+      if (!pr) continue;
+      run.state = {
+        ...run.state,
+        pullRequests: run.state.pullRequests.map((candidate) => candidate.id === pr.id
+          ? {
+            ...candidate,
+            status: "Changes requested",
+            reviewerStatus: "Requested changes",
+            comments: [...candidate.comments, `Owner request: ${message}`].slice(-6)
+          }
+          : candidate),
+        agents: run.state.agents.map((candidate) => candidate.id === agentId && candidate.status === "completed"
+          ? { ...candidate, status: "queued", currentActivity: "Owner change request received", progress: Math.min(candidate.progress, 90) }
+          : candidate)
+      };
+      reopened.push(pr.id);
+    }
+    if (reopened.length > 0 && run.state.isComplete) {
+      run.state = { ...run.state, isComplete: false, phase: "executing" };
+    }
+  }
+
+  appendEvent(
+    run,
+    `Owner posted ${isQuestion ? "a question" : "an instruction"} to ${validMentions.length > 0 ? validMentions.join(", ") : "the whole organization"}${reopened.length > 0 ? `; reopened PR${reopened.length === 1 ? "" : "s"} ${reopened.map((id) => `#${id}`).join(", ")}` : ""}`,
+    "info"
+  );
+  writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+  broadcast(run, "state", run.state);
+  return { entry, reopened, mentioned: validMentions };
+}
+
 export function updateReviewedPullRequest(
   run: MissionRun,
   pr: PullRequest,

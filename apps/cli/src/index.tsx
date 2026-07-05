@@ -22,6 +22,7 @@ function Root({
   resumeId?: string;
 }) {
   const [mission, setMission] = useState(initialMission ?? "");
+  const [activeResumeId, setActiveResumeId] = useState(resumeId);
   const [runtime, setRuntime] = useState<RuntimeProfile>({
     mode: initialMode,
     apiUrl: apiUrl ?? process.env.ORVIX_API_URL ?? "http://localhost:8787",
@@ -29,8 +30,8 @@ function Root({
   });
   const [setupComplete, setSetupComplete] = useState(Boolean(initialMission || resumeId || process.env.ORVIX_SKIP_ONBOARDING));
 
-  if (resumeId) {
-    return <App mission={mission || `Resuming ${resumeId}`} mode="cloud" apiUrl={runtime.apiUrl} apiToken={runtime.apiToken} resumeId={resumeId} />;
+  if (activeResumeId) {
+    return <App mission={mission || `Resuming ${activeResumeId}`} mode="cloud" apiUrl={runtime.apiUrl} apiToken={runtime.apiToken} resumeId={activeResumeId} />;
   }
 
   if (mission) {
@@ -57,6 +58,7 @@ function Root({
       apiUrl={runtime.apiUrl}
       apiToken={runtime.apiToken}
       onSubmit={setMission}
+      onResume={setActiveResumeId}
     />
   );
 }

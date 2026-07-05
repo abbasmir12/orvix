@@ -12,7 +12,7 @@ import { appendEvent, metricsSummary, port, runs, runSummary, writeSse, type Mis
 import { agentName, getBookContext, postBookEntry } from "./book.js";
 import { createRun } from "./planning.js";
 import { executeAgentTask, executeGitTool, executeNextAgentTask } from "./agentRuntime.js";
-import { reviewNextPullRequest, reviewPullRequest } from "./review.js";
+import { reviewNextPullRequest, reviewPullRequest, routeOwnerInstruction } from "./review.js";
 import { runAutopilot, runSchedulerTurn } from "./scheduler.js";
 import { listRunsOnDisk, resumeRun } from "./resume.js";
 
@@ -201,6 +201,65 @@ export const server = createServer(async (request, response) => {
         workspace: run.workspace,
         files: listWorkspaceFiles(run.workspace),
         git: getGitStatus(run.workspace)
+      });
+      return;
+    }
+
+    const turnsMatch = url.pathname.match(/^\/missions\/([^/]+)\/turns$/);
+    if (request.method === "GET" && turnsMatch) {
+      const run = runs.get(turnsMatch[1]);
+      if (!run) {
+        notFound(response);
+        return;
+      }
+      let turns: unknown[] = [];
+      try {
+        const { readFileSync, existsSync } = await import("node:fs");
+        const { resolve: resolvePath } = await import("node:path");
+        const turnsPath = resolvePath(run.store.runDir, "turns.jsonl");
+        if (existsSync(turnsPath)) {
+          turns = readFileSync(turnsPath, "utf8")
+            .split("\n")
+            .filter(Boolean)
+            .slice(-300)
+            .flatMap((line) => {
+              try {
+                return [JSON.parse(line)];
+              } catch {
+                return [];
+              }
+            });
+        }
+      } catch {
+        turns = [];
+      }
+      sendJson(response, 200, { missionId: run.id, turns });
+      return;
+    }
+
+    const ownerMatch = url.pathname.match(/^\/missions\/([^/]+)\/owner$/);
+    if (request.method === "POST" && ownerMatch) {
+      const run = runs.get(ownerMatch[1]);
+      if (!run) {
+        notFound(response);
+        return;
+      }
+      const body = await readJson<{ message?: string; toAgentIds?: string[] }>(request);
+      if (!body.message?.trim()) {
+        sendJson(response, 400, { error: "message_required" });
+        return;
+      }
+      const result = routeOwnerInstruction(run, body.message.trim(), body.toAgentIds ?? []);
+      // If the pool already drained (mission idle/blocked/complete), the
+      // owner's instruction restarts it so reopened PRs get revised now.
+      if (!run.autopilotActive && run.workspace) {
+        void runAutopilot(run, 300, "automatic").catch(() => undefined);
+      }
+      sendJson(response, 200, {
+        ok: true,
+        entryId: result.entry.id,
+        mentioned: result.mentioned,
+        reopenedPrs: result.reopened
       });
       return;
     }
