@@ -708,7 +708,7 @@ export class QwenClient {
       let response: Response;
       try {
         response = await withRequestSlot(this.config.maxConcurrentRequests, () =>
-          fetch(`${this.config.baseUrl}/chat/completions`, {
+          fetch(`${this.config.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
             method: "POST",
             headers: {
               "Authorization": `Bearer ${this.config.apiKey}`,
