@@ -1035,7 +1035,9 @@ function resolveWorkspacePath(workspace: Workspace, path: string) {
 
 function walkFiles(root: string, current: string, depth: number): WorkspaceFile[] {
   const entries = readdirSync(current, { withFileTypes: true })
-    .filter((entry) => !entry.name.startsWith("."))
+    // node_modules alone can exhaust the 200-entry cap before src/ is ever
+    // reached — dependency internals are never useful to agents or the UI.
+    .filter((entry) => !entry.name.startsWith(".") && entry.name !== "node_modules")
     .sort((left, right) => left.name.localeCompare(right.name));
 
   const files: WorkspaceFile[] = [];

@@ -29,6 +29,7 @@ type MissionCockpitProps = {
   commandDraft: string | null;
   mentionCandidates?: Agent[];
   mentionIndex?: number;
+  repoFiles?: Array<{ path: string; type: "file" | "directory" }>;
 };
 
 const fit = (value: string, width: number) => {
@@ -195,6 +196,57 @@ function contextMeterColor(percent: number) {
   return percent >= 80 ? theme.danger : percent >= 60 ? theme.warning : theme.success;
 }
 
+const fileColor = (name: string) => {
+  if (/\.(tsx|jsx)$/.test(name)) return theme.cloud;
+  if (/\.(ts|js|mjs)$/.test(name)) return theme.cloudDim ?? theme.cloud;
+  if (/\.(css|scss)$/.test(name)) return theme.accentBright;
+  if (/\.(md|mdx|txt)$/.test(name)) return theme.muted;
+  if (/\.(json|ya?ml|toml|html)$/.test(name)) return theme.warning;
+  return theme.text;
+};
+
+/**
+ * Live repo tree with connectors. Flat sorted paths become tree rows; a row
+ * is "last among siblings" when no later entry shares its parent directory,
+ * which drives └╴ vs ├╴ and keeps rendering O(n).
+ */
+function repoTreeLines(entries: Array<{ path: string; type: "file" | "directory" }>, maxRows: number, width: number) {
+  const sorted = [...entries].sort((a, b) => a.path.localeCompare(b.path));
+  const rows: Array<{ key: string; node: React.ReactNode }> = [];
+  for (let index = 0; index < sorted.length && rows.length < maxRows; index += 1) {
+    const entry = sorted[index];
+    const parts = entry.path.split("/");
+    const depth = parts.length - 1;
+    if (depth > 3) continue;
+    const name = parts[parts.length - 1];
+    const parent = parts.slice(0, -1).join("/");
+    let isLast = true;
+    for (let ahead = index + 1; ahead < sorted.length; ahead += 1) {
+      const aheadParts = sorted[ahead].path.split("/");
+      if (aheadParts.slice(0, -1).join("/") === parent && aheadParts.length - 1 === depth) {
+        isLast = false;
+        break;
+      }
+      if (!sorted[ahead].path.startsWith(parent.length > 0 ? `${parent}/` : "")) break;
+    }
+    const indent = "  ".repeat(depth);
+    const connector = isLast ? "└╴" : "├╴";
+    rows.push({
+      key: entry.path,
+      node: (
+        <Text>
+          <Text color={theme.faint}>{indent}{connector}</Text>
+          {entry.type === "directory"
+            ? <Text color={theme.accent} bold>{fit(`${name}/`, Math.max(4, width - indent.length - 2))}</Text>
+            : <Text color={fileColor(name)}>{fit(name, Math.max(4, width - indent.length - 2))}</Text>}
+        </Text>
+      )
+    });
+  }
+  const hidden = sorted.filter((entry) => entry.path.split("/").length - 1 <= 3).length - rows.length;
+  return { rows, hidden: Math.max(0, hidden) };
+}
+
 /**
  * Vertical status rail — the cockpit's identity column on every screen size.
  * Rows are the scarce dimension in a terminal, so brand, mission, phase, and
@@ -202,7 +254,14 @@ function contextMeterColor(percent: number) {
  * mission request, and tree-connected stat groups. No surrounding box — rule
  * lines segment it, which reads cleaner and saves two columns.
  */
-function SideRail({ state, width, metrics }: { state: SimulationState; width: number; metrics?: RunMetricsSummary | null }) {
+function SideRail({ state, width, metrics, repoFiles = [], fileRows = 0 }: {
+  state: SimulationState;
+  width: number;
+  metrics?: RunMetricsSummary | null;
+  repoFiles?: Array<{ path: string; type: "file" | "directory" }>;
+  /** Rows available for the live repo tree below the stat groups. */
+  fileRows?: number;
+}) {
   const active = state.agents.filter((agent) => agent.status === "active").length;
   const blocked = state.agents.filter((agent) => agent.status === "blocked").length;
   const approved = state.pullRequests.filter((pr) => pr.status === "Approved").length;
@@ -268,6 +327,19 @@ function SideRail({ state, width, metrics }: { state: SimulationState; width: nu
           ) : null}
         </>
       ) : null}
+      {fileRows >= 3 && repoFiles.length > 0 ? (() => {
+        const tree = repoTreeLines(repoFiles, fileRows - 2, inner);
+        return (
+          <>
+            <Text> </Text>
+            <Text color={theme.muted} bold>repo</Text>
+            {tree.rows.map((row) => (
+              <Box key={row.key} height={1} overflow="hidden">{row.node}</Box>
+            ))}
+            {tree.hidden > 0 ? <Text color={theme.faint}>  … {tree.hidden} more</Text> : null}
+          </>
+        );
+      })() : null}
     </Box>
   );
 }
@@ -1723,7 +1795,8 @@ export function MissionCockpit({
   metrics,
   commandDraft,
   mentionCandidates,
-  mentionIndex
+  mentionIndex,
+  repoFiles
 }: MissionCockpitProps) {
   const { stdout } = useStdout();
   const width = Math.max(72, stdout.columns ?? 80);
@@ -1830,7 +1903,7 @@ export function MissionCockpit({
 
   return (
     <Box width={width}>
-      <SideRail state={state} width={railWidth} metrics={metrics} />
+      <SideRail state={state} width={railWidth} metrics={metrics} repoFiles={repoFiles} fileRows={Math.max(0, height - 25)} />
       <Box width={mainWidth} flexDirection="column">
         <Box width={mainWidth}>
           <Box width={mainLeft}>

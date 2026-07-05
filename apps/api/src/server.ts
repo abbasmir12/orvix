@@ -196,10 +196,11 @@ export const server = createServer(async (request, response) => {
         return;
       }
 
+      const depth = Math.min(6, Math.max(1, Number(url.searchParams.get("depth")) || 2));
       sendJson(response, 200, {
         missionId: run.id,
         workspace: run.workspace,
-        files: listWorkspaceFiles(run.workspace),
+        files: listWorkspaceFiles(run.workspace, { depth }),
         git: getGitStatus(run.workspace)
       });
       return;

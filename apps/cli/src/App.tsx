@@ -352,6 +352,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     mode === "mock" ? mockTurnTimeline[0] ?? [] : []
   );
   const [metrics, setMetrics] = useState<RunMetricsSummary | null>(mode === "mock" ? mockMetrics : null);
+  const [repoFiles, setRepoFiles] = useState<Array<{ path: string; type: "file" | "directory" }>>([]);
   const authHeaders = useMemo<Record<string, string>>(() => {
     const headers: Record<string, string> = {};
     if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
@@ -1022,12 +1023,28 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       }
     }
 
+    async function pollRepoTree() {
+      try {
+        const response = await fetch(`${apiUrl}/missions/${missionId}/workspace?depth=4`, { headers: authHeaders, signal: controller.signal });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json() as { files?: { files?: Array<{ path: string; type: "file" | "directory" }> } };
+        const entries = (payload.files?.files ?? []).filter((entry) =>
+          !/^(node_modules|dist|build|coverage)(\/|$)/.test(entry.path) && !entry.path.includes("/node_modules"));
+        setRepoFiles(entries);
+      } catch {
+        // repo tree is decorative; a missed poll is not worth surfacing
+      }
+    }
+
     void pollMetrics();
+    void pollRepoTree();
     const interval = setInterval(() => void pollMetrics(), 3000);
+    const treeInterval = setInterval(() => void pollRepoTree(), 7000);
     return () => {
       cancelled = true;
       controller.abort();
       clearInterval(interval);
+      clearInterval(treeInterval);
     };
   }, [apiUrl, authHeaders, mode, missionId]);
 
@@ -1064,6 +1081,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
             commandDraft={commandDraft}
             mentionCandidates={mentionCandidates}
             mentionIndex={mentionIndex}
+            repoFiles={repoFiles}
           />
         )}
       </Box>
