@@ -707,6 +707,19 @@ export class QwenClient {
           // Every model in the chain is marked exhausted; give the current one
           // one last shot in case it was a transient/rate-limit-shaped 403.
         }
+        // A 400/404 naming the model (e.g. a realtime-only model called via
+        // chat completions, or a typo'd model id) will never succeed on this
+        // model — fall through the chain like a quota exhaustion instead of
+        // failing the whole call.
+        if ((response.status === 400 || response.status === 404) && modelChain.length > 1 && /model|not.?support|invalid_parameter|access denied/i.test(body)) {
+          exhaustedModels.add(model);
+          const next = firstAvailableModelIndex(modelChain, modelIndex + 1);
+          if (next !== -1) {
+            console.warn(`[qwen] ${model} rejected the request (${response.status}); switching to ${modelChain[next]} for role "${role}"`);
+            modelIndex = next;
+            continue;
+          }
+        }
         const retryable = response.status === 429 || response.status >= 500;
         if (retryable && transientAttempt < maxRequestAttempts - 1) {
           transientAttempt += 1;

@@ -252,6 +252,11 @@ export async function runMissionPool(run: MissionRun) {
   stopScriptedTimers(run);
   const inFlight = new Map<string, PoolJob>();
   const pendingBuildPrIds = new Set<number>();
+  // Consecutive hard failures (e.g. Qwen unreachable) per job key. Without
+  // this, a failing revision session relaunches forever because review
+  // attempt counts only advance on completed reviews.
+  const jobFailures = new Map<string, number>();
+  const failureLimit = 3;
   const totalLimit = envPositiveInt("QWEN_POOL_CONCURRENCY", 6, 16);
   let acceptanceAttempts = 0;
   let jobsCompleted = 0;
@@ -259,18 +264,32 @@ export async function runMissionPool(run: MissionRun) {
 
   const launch = (key: string, kind: PoolJobKind, agentId: string | undefined, work: () => Promise<unknown>) => {
     const promise = (async () => {
+      let outcomeOk = false;
       try {
-        return await work();
+        const result = await work();
+        outcomeOk = Boolean((result as { ok?: boolean } | undefined)?.ok);
+        return result;
       } catch (error) {
         appendEvent(run, `Scheduler ${kind} job failed: ${error instanceof Error ? error.message : "unknown error"}`, "warning");
         return { ok: false, error };
       } finally {
         jobsCompleted += 1;
         inFlight.delete(key);
+        if (outcomeOk) {
+          jobFailures.delete(key);
+        } else {
+          const failures = (jobFailures.get(key) ?? 0) + 1;
+          jobFailures.set(key, failures);
+          if (failures === failureLimit) {
+            appendEvent(run, `Scheduler paused ${key} after ${failures} consecutive failures; it will retry on the next autopilot start`, "warning");
+          }
+        }
       }
     })();
     inFlight.set(key, { key, kind, agentId, promise });
   };
+
+  const failedOut = (key: string) => (jobFailures.get(key) ?? 0) >= failureLimit;
 
   const kindCount = (kind: PoolJobKind) => Array.from(inFlight.values()).filter((job) => job.kind === kind).length;
 
@@ -296,7 +315,7 @@ export async function runMissionPool(run: MissionRun) {
       if (pr.status !== "Changes requested" || isNonBlockingReviewerPr(run, pr)) continue;
       if (getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit) continue;
       const key = `revision:${pr.id}`;
-      if (inFlight.has(key) || busyAgents.has(pr.ownerAgentId)) continue;
+      if (inFlight.has(key) || busyAgents.has(pr.ownerAgentId) || failedOut(key)) continue;
       const task = run.state.tasks.find((candidate) => candidate.branch === pr.branch && candidate.ownerAgentId === pr.ownerAgentId);
       if (!task) continue;
       if (trySupersedeEmptyDiffPr(run, pr)) continue;
@@ -322,7 +341,7 @@ export async function runMissionPool(run: MissionRun) {
         if (pr.status !== "In progress" || !executedBranches.has(pr.branch)) continue;
         if (getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit) continue;
         const key = `review:${pr.id}`;
-        if (inFlight.has(key)) continue;
+        if (inFlight.has(key) || failedOut(key)) continue;
         launch(key, "review", undefined, async () => {
           const result = await reviewPullRequest(run, pr.id) as { approved?: boolean; superseded?: boolean };
           if (result.approved && !result.superseded) {
@@ -337,7 +356,7 @@ export async function runMissionPool(run: MissionRun) {
     for (const task of getExecutableTasks(run, getCompletedTaskIds(run), 16)) {
       if (inFlight.size >= totalLimit || kindCount("execution") >= executionCap) break;
       const key = `execution:${task.id}`;
-      if (inFlight.has(key) || busyAgents.has(task.ownerAgentId)) continue;
+      if (inFlight.has(key) || busyAgents.has(task.ownerAgentId) || failedOut(key)) continue;
       busyAgents.add(task.ownerAgentId);
       launch(key, "execution", task.ownerAgentId, () => executeAgentTask(run, task.ownerAgentId, { taskId: task.id }));
     }
