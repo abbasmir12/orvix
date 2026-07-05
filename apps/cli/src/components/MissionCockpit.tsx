@@ -1481,11 +1481,26 @@ function CommandBar({
   const isLive = mode === "cloud" && Boolean(missionId);
   const promptOpen = commandDraft !== null;
 
+  // The bordered box holds ONLY the input line — hints, live status, and the
+  // @ mention picker all render below it so nothing ever wraps inside the box.
   return (
-    <Box width={width} borderStyle="round" borderColor={promptOpen ? theme.accent : active ? theme.accent : theme.border} paddingX={1} marginTop={1} flexDirection="column">
+    <Box width={width} flexDirection="column" marginTop={1}>
+      <Box width={width} borderStyle="round" borderColor={promptOpen ? theme.accent : active ? theme.accent : theme.border} paddingX={1}>
+        {promptOpen ? (
+          <Text>
+            <Text color={theme.accentBright} bold>{glyphs.chevron} </Text>
+            <Text color={theme.text}>{fit(`${commandDraft}▌`, Math.max(24, width - 6))}</Text>
+          </Text>
+        ) : (
+          <Text>
+            <Text color={theme.accent}>{glyphs.chevron} </Text>
+            <Text color={theme.faint}>{fit("", Math.max(24, width - 6))}</Text>
+          </Text>
+        )}
+      </Box>
       {promptOpen && mentionCandidates.length > 0 ? (
-        <Box flexDirection="column" marginBottom={0}>
-          <Text color={theme.faint}>@ mention — ↑↓ select · tab/enter insert · MasterMind is always CC'd</Text>
+        <Box flexDirection="column" paddingX={1}>
+          <Text color={theme.faint}>@ mention — ↑↓ select · tab/enter insert · MasterMind always CC'd</Text>
           {mentionCandidates.map((agent, index) => (
             <Text key={agent.id}>
               <Text color={index === mentionIndex ? theme.accentBright : theme.faint}>{index === mentionIndex ? `${glyphs.chevron} ` : "  "}</Text>
@@ -1494,20 +1509,14 @@ function CommandBar({
             </Text>
           ))}
         </Box>
-      ) : null}
-      {promptOpen ? (
-        <Text>
-          <Text color={theme.accentBright} bold>{glyphs.chevron} </Text>
-          <Text color={theme.text}>{fit(`${commandDraft}▌`, Math.max(24, width - 6))}</Text>
-        </Text>
       ) : (
-        <Box justifyContent="space-between">
-          <Text>
-            <Text color={theme.accent}>{glyphs.chevron} </Text>
-            <Text color={theme.muted}>/ commands · @ mention an agent · type to talk as owner</Text>
-            <Text color={theme.faint}>  ·  tab panels · ←→ tabs · ↑↓ move · enter inspect · e expand · q quit</Text>
+        <Box paddingX={1} justifyContent="space-between">
+          <Text color={theme.faint}>
+            {fit(promptOpen
+              ? "enter send · esc cancel · @ mention an agent · /help commands"
+              : "/ commands · @ mention · type = owner · tab panels · ←→ tabs · e expand · q quit", Math.max(24, width - (isLive ? 40 : 4)))}
           </Text>
-          <Text color={isLive ? theme.cloud : theme.faint}>{fit(executionStatus, Math.max(12, Math.min(52, width - 60)))}</Text>
+          {isLive ? <Text color={theme.cloud}>{fit(executionStatus, 34)}</Text> : null}
         </Box>
       )}
     </Box>
@@ -1540,8 +1549,8 @@ export function MissionCockpit({
   const height = Math.max(24, stdout.rows ?? 32);
   const leftWidth = Math.floor(width * 0.5);
   const rightWidth = width - leftWidth;
-  const normalActivityRows = Math.max(4, Math.min(8, height - 24));
-  const expandedActivityRows = Math.max(8, height - 13);
+  const normalActivityRows = Math.max(4, Math.min(8, height - 26));
+  const expandedActivityRows = Math.max(8, height - 15);
   const selectedAgent = state.agents[Math.min(selectedAgentIndex, state.agents.length - 1)] ?? state.agents[0];
   const inspectedAgent = inspectedAgentIndex === null
     ? null

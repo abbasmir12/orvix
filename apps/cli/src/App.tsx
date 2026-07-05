@@ -888,76 +888,90 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
           setReasoningArtifacts(reasoning.artifacts ?? []);
         }
 
-        const eventsResponse = await fetch(`${apiUrl}${created.eventsUrl}`, {
-          headers: authHeaders,
-          signal: controller.signal
-        });
-
-        if (!eventsResponse.ok || !eventsResponse.body) {
-          throw new Error(`Event stream returned ${eventsResponse.status}`);
-        }
-
-        const reader = eventsResponse.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
+        // Streaming with an idle watchdog and automatic reconnection: on a
+        // slow or flaky connection the SSE stream can silently stall — the
+        // old behavior froze the screen and even marked the mission failed.
+        // Now a stalled/closed stream refetches the state snapshot and
+        // re-subscribes until the effect is cancelled.
         while (!cancelled) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-
-          buffer += decoder.decode(chunk.value, { stream: true });
-          const parsed = parseSseMessages(buffer);
-          buffer = parsed.rest;
-
-          for (const message of parsed.messages) {
-            if (message.event === "state") {
-              setState(message.data as SimulationState);
+          try {
+            const streamController = new AbortController();
+            const onOuterAbort = () => streamController.abort();
+            controller.signal.addEventListener("abort", onOuterAbort, { once: true });
+            const eventsResponse = await fetch(`${apiUrl}${created.eventsUrl}`, {
+              headers: authHeaders,
+              signal: streamController.signal
+            });
+            if (!eventsResponse.ok || !eventsResponse.body) {
+              throw new Error(`Event stream returned ${eventsResponse.status}`);
             }
 
-            if (message.event === "reasoning") {
-              setReasoningArtifacts((current) => {
-                const nextArtifact = message.data as ReasoningArtifact;
-                const existing = current.find((artifact) => artifact.id === nextArtifact.id);
-                if (existing) {
-                  return current.map((artifact) => artifact.id === nextArtifact.id ? nextArtifact : artifact);
+            const reader = eventsResponse.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (!cancelled) {
+              const idleTimer = setTimeout(() => streamController.abort(), 60000);
+              const chunk = await reader.read().finally(() => clearTimeout(idleTimer));
+              if (chunk.done) break;
+
+              buffer += decoder.decode(chunk.value, { stream: true });
+              const parsed = parseSseMessages(buffer);
+              buffer = parsed.rest;
+
+              for (const message of parsed.messages) {
+                if (message.event === "state") {
+                  setState(message.data as SimulationState);
                 }
 
-                return [...current, nextArtifact];
-              });
-            }
+                if (message.event === "reasoning") {
+                  setReasoningArtifacts((current) => {
+                    const nextArtifact = message.data as ReasoningArtifact;
+                    const existing = current.find((artifact) => artifact.id === nextArtifact.id);
+                    if (existing) {
+                      return current.map((artifact) => artifact.id === nextArtifact.id ? nextArtifact : artifact);
+                    }
 
-            if (message.event === "planning") {
-              const stageEvent = message.data as PlanningStageEvent;
-              setPlanningStages((current) => [...current, stageEvent]);
-            }
+                    return [...current, nextArtifact];
+                  });
+                }
 
-            if (message.event === "planning_snapshot") {
-              setPlanningStages(message.data as PlanningStageEvent[]);
-            }
+                if (message.event === "planning") {
+                  const stageEvent = message.data as PlanningStageEvent;
+                  setPlanningStages((current) => [...current, stageEvent]);
+                }
 
-            if (message.event === "agent_turn") {
-              const turnEvent = message.data as AgentTurnEvent;
-              setAgentTurns((current) => [...current, turnEvent].slice(-300));
+                if (message.event === "planning_snapshot") {
+                  setPlanningStages(message.data as PlanningStageEvent[]);
+                }
+
+                if (message.event === "agent_turn") {
+                  const turnEvent = message.data as AgentTurnEvent;
+                  setAgentTurns((current) => [...current, turnEvent].slice(-300));
+                }
+              }
             }
+            controller.signal.removeEventListener("abort", onOuterAbort);
+          } catch {
+            // fall through to the reconnect below
+          }
+          if (cancelled || controller.signal.aborted) return;
+          setExecutionStatus("Stream interrupted — reconnecting…");
+          await new Promise((resolvePause) => setTimeout(resolvePause, 3000));
+          try {
+            const refreshed = await fetch(`${apiUrl}/missions/${created.missionId}`, { headers: authHeaders });
+            if (refreshed.ok) {
+              const snapshot = await refreshed.json() as { state?: SimulationState };
+              if (snapshot.state) setState(snapshot.state);
+              setExecutionStatus("Reconnected — state refreshed");
+            }
+          } catch {
+            // API itself unreachable; keep retrying the stream loop.
           }
         }
       } catch (error) {
         if (cancelled || controller.signal.aborted) return;
-          setExecutionStatus(actionErrorMessage(error, apiUrl));
-          setState((current) => ({
-            ...current,
-            phase: "final",
-            isComplete: true,
-          events: [
-            ...current.events,
-            {
-              id: "cloud-error",
-              time: "00:00",
-              message: actionErrorMessage(error, apiUrl),
-              severity: "warning"
-            }
-          ]
-        }));
+        setExecutionStatus(actionErrorMessage(error, apiUrl));
       }
     }
 

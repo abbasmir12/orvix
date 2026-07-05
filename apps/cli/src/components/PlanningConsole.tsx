@@ -574,8 +574,11 @@ export function PlanningConsole({
   // Both feed rows (plus header and borders) must fit the real terminal
   // height — the console previously used fixed heights and overflowed
   // smaller windows. Chrome = header (3-4 rows) + per-row borders/padding.
-  const chromeRows = (mode === "cloud" ? 4 : 3) + 12;
-  const FEED_ROWS = Math.max(4, Math.min(14, Math.floor((termRows - chromeRows) / 2)));
+  // Slightly generous chrome estimate: underestimating clips the TOP of the
+  // frame (ink anchors to the bottom of the terminal), which is much worse
+  // than feeds being a row shorter than they could be.
+  const chromeRows = (mode === "cloud" ? 4 : 3) + 14;
+  const FEED_ROWS = Math.max(3, Math.min(14, Math.floor((termRows - chromeRows) / 2)));
   const compact = FEED_ROWS < 9;
 
   function scrollPanel(panel: PanelId, delta: number) {

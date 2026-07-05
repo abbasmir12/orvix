@@ -194,6 +194,8 @@ export type QwenChatResult = {
   reasoningContent?: string;
   nativeToolCalls?: AgentToolCall[];
   usage?: QwenUsage;
+  /** Real context window of the serving model, when the provider reports it. */
+  contextWindow?: number;
   message: Record<string, unknown>;
   raw: ChatCompletionResponse;
 };
@@ -531,6 +533,42 @@ function parseModelChain(raw: string): string[] {
   return Array.from(new Set(models.length > 0 ? models : ["qwen-plus"]));
 }
 
+// Real context windows per model id, fetched once per process from the
+// provider's /models endpoint (OpenRouter: context_length; other OpenAI-
+// compatible hosts use similar keys). Lets compaction use the model's true
+// window (e.g. DeepSeek v4 flash = 1M) instead of one conservative default.
+const modelContextWindows = new Map<string, number>();
+let modelsMetadataFetch: Promise<void> | null = null;
+
+function ensureModelsMetadata(config: QwenConfig) {
+  if (modelsMetadataFetch) return modelsMetadataFetch;
+  modelsMetadataFetch = (async () => {
+    try {
+      const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/models`, {
+        headers: { Authorization: `Bearer ${config.apiKey}` },
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!response.ok) return;
+      const payload = await response.json() as { data?: Array<Record<string, unknown>> };
+      for (const model of payload.data ?? []) {
+        const id = String(model.id ?? "");
+        const window = Number(
+          model.context_length ?? model.context_window ?? model.max_model_len ?? model.max_context_length ?? Number.NaN
+        );
+        if (id && Number.isFinite(window) && window >= 1024) {
+          modelContextWindows.set(id, Math.floor(window));
+        }
+      }
+      if (modelContextWindows.size > 0) {
+        console.warn(`[qwen] loaded context windows for ${modelContextWindows.size} models from ${config.baseUrl}`);
+      }
+    } catch {
+      // Metadata is best-effort; the env fallback covers providers without it.
+    }
+  })();
+  return modelsMetadataFetch;
+}
+
 // Models that recently failed hard (quota 429/403 or request-shape 400).
 // Shared across all QwenClient instances/roles, but entries EXPIRE: a
 // per-minute throttle looks identical to daily exhaustion in the response,
@@ -667,6 +705,7 @@ export class QwenClient {
     const thinkingEnabled = options.thinking === true && process.env.QWEN_ENABLE_THINKING === "true";
     const thinkingBudget = Number(process.env.QWEN_THINKING_BUDGET ?? "");
     const role = options.role ?? "planner";
+    void ensureModelsMetadata(this.config);
     const modelChain = this.modelChainForRole(role);
     let modelIndex = Math.max(0, firstAvailableModelIndex(modelChain));
     // response_format and tools are mutually exclusive on DashScope; native
@@ -844,6 +883,8 @@ export class QwenClient {
         reasoningContent,
         nativeToolCalls,
         usage,
+        /** The serving model's real context window when the provider's /models endpoint reports one. */
+        contextWindow: modelContextWindows.get(model),
         message: message as Record<string, unknown>,
         raw: payload
       };

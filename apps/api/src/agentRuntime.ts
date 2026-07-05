@@ -523,13 +523,17 @@ async function runAgentSession(
   let nudged = false;
   let wrapUpNudged = false;
   let turn = 0;
-  const windowTokens = envPositiveInt("QWEN_CONTEXT_WINDOW_TOKENS", 65536, 2097152);
+  const fallbackWindowTokens = envPositiveInt("QWEN_CONTEXT_WINDOW_TOKENS", 65536, 2097152);
   const compactAtPercent = envPositiveInt("QWEN_COMPACT_AT_PERCENT", 80, 99);
 
   for (; turn < maxTurns; turn += 1) {
     const response = await qwen.agentSessionTurn(messages, allowedTools, { requireTool: turn === 0 });
     reasoningContent = response.reasoningContent ?? reasoningContent;
 
+    // Prefer the serving model's REAL window (from the provider's /models
+    // metadata — e.g. DeepSeek v4 flash reports 1M) over the env fallback,
+    // re-read every turn because chain fallbacks can switch models mid-session.
+    const windowTokens = response.contextWindow ?? fallbackWindowTokens;
     const promptTokens = response.usage?.promptTokens ?? 0;
     const contextPercent = Math.min(999, Math.round((promptTokens / windowTokens) * 100));
     const contextInfo = { promptTokens, windowTokens, percent: contextPercent };
