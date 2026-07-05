@@ -196,45 +196,76 @@ function contextMeterColor(percent: number) {
 }
 
 /**
- * Vertical status rail for short terminals: the top banner's content turned
- * 90° — on laptops rows are scarce and columns are cheap, so the brand,
- * phase, and counters live in a slim left column instead of a 3-row bar.
+ * Vertical status rail — the cockpit's identity column on every screen size.
+ * Rows are the scarce dimension in a terminal, so brand, mission, phase, and
+ * counters live in a slim left column: a two-row block-letter ORVIX mark, the
+ * mission request, and tree-connected stat groups. No surrounding box — rule
+ * lines segment it, which reads cleaner and saves two columns.
  */
 function SideRail({ state, width, metrics }: { state: SimulationState; width: number; metrics?: RunMetricsSummary | null }) {
   const active = state.agents.filter((agent) => agent.status === "active").length;
   const blocked = state.agents.filter((agent) => agent.status === "blocked").length;
   const approved = state.pullRequests.filter((pr) => pr.status === "Approved").length;
   const tasksDone = state.tasks.filter((task) => task.status === "completed").length;
-  const inner = Math.max(8, width - 4);
+  const inner = Math.max(12, width - 2);
   const elapsed = metrics ? `${Math.floor(metrics.wallClockMs / 60000)}:${String(Math.floor((metrics.wallClockMs % 60000) / 1000)).padStart(2, "0")}` : null;
+  const missionText = (state.analysis.request || "").replace(/\s+/g, " ").trim();
 
   return (
-    <Box width={width} flexDirection="column" borderStyle="round" borderColor={theme.accentDim} paddingX={1}>
-      <Text color={theme.accentBright} bold>{glyphs.ring} ORVIX</Text>
-      <Text color={theme.faint}>{fit(state.analysis.id.replace(/^mission_/, "m_"), inner)}</Text>
-      <Text color={phaseColor(state.phase)} bold>{fit(state.phase.toUpperCase(), inner)}</Text>
-      <Text color={theme.faint}>{"─".repeat(inner)}</Text>
+    <Box width={width} flexDirection="column" paddingX={1}>
+      <Text color={theme.accentBright} bold>█▀█ █▀█ █░█ █ ▀▄▀</Text>
+      <Text color={theme.accentBright} bold>█▄█ █▀▄ ░▀░ █ █░█</Text>
+      <Text color={theme.faint}>╾{"─".repeat(Math.max(4, inner - 2))}╼</Text>
+      <Text color={theme.muted} bold>mission</Text>
       <Text>
-        <Text color={theme.muted}>PRs </Text>
+        <Text color={theme.faint}>└╴</Text>
+        <Text color={theme.text}>{fit(missionText || state.analysis.id, inner - 2)}</Text>
+      </Text>
+      <Text>
+        <Text color={theme.faint}>  {fit(state.analysis.id.replace(/^mission_/, "m_"), inner - 2)}</Text>
+      </Text>
+      <Text> </Text>
+      <Text color={theme.muted} bold>phase</Text>
+      <Text>
+        <Text color={theme.faint}>└╴</Text>
+        <Text color={phaseColor(state.phase)} bold>{state.phase.toUpperCase()}</Text>
+      </Text>
+      <Text> </Text>
+      <Text color={theme.muted} bold>delivery</Text>
+      <Text>
+        <Text color={theme.faint}>├╴PRs   </Text>
         <Text color={approved === state.pullRequests.length && approved > 0 ? theme.success : theme.text}>{approved}</Text>
         <Text color={theme.faint}>/{state.pullRequests.length}</Text>
       </Text>
       <Text>
-        <Text color={theme.muted}>tsk </Text>
+        <Text color={theme.faint}>├╴tasks </Text>
         <Text color={theme.text}>{tasksDone}</Text>
         <Text color={theme.faint}>/{state.tasks.length}</Text>
       </Text>
       <Text>
-        <Text color={active > 0 ? theme.cloud : theme.muted}>{active}{glyphs.active}</Text>
+        <Text color={theme.faint}>└╴</Text>
+        <Text color={active > 0 ? theme.cloud : theme.muted}>{active}{glyphs.active} active</Text>
         <Text color={theme.faint}> </Text>
         <Text color={blocked > 0 ? theme.danger : theme.faint}>{blocked}{glyphs.blocked}</Text>
       </Text>
       {metrics ? (
         <>
-          <Text color={theme.faint}>{"─".repeat(inner)}</Text>
-          <Text color={theme.accent}>{fit(`${metrics.totalTokens >= 1000 ? `${Math.round(metrics.totalTokens / 1000)}k` : metrics.totalTokens} tok`, inner)}</Text>
-          <Text color={theme.success}>{fit(`${metrics.filesWritten} files`, inner)}</Text>
-          {elapsed ? <Text color={theme.muted}>{fit(elapsed, inner)}</Text> : null}
+          <Text> </Text>
+          <Text color={theme.muted} bold>usage</Text>
+          <Text>
+            <Text color={theme.faint}>├╴</Text>
+            <Text color={theme.accent}>{fit(`${metrics.totalTokens >= 1000 ? `${Math.round(metrics.totalTokens / 1000)}k` : metrics.totalTokens} tok`, inner - 2)}</Text>
+          </Text>
+          <Text>
+            <Text color={theme.faint}>├╴</Text>
+            <Text color={theme.success}>{fit(`${metrics.filesWritten} files`, inner - 2)}</Text>
+          </Text>
+          {elapsed ? (
+            <Text>
+              <Text color={theme.faint}>└╴</Text>
+              <Text color={theme.muted}>{fit(elapsed, inner - 2)}</Text>
+            </Text>
+          ) : null}
         </>
       ) : null}
     </Box>
@@ -1712,7 +1743,7 @@ export function MissionCockpit({
   //   roster panel   = maxRows + 6 (border 2, title 1, gap 1, ±more markers 2)
   // Underestimating clips the TOP (ink bottom-anchors), so budgets round down.
   const compact = height < 40;
-  const normalActivityRows = Math.max(3, Math.min(8, height - 35));
+  const normalActivityRows = Math.max(3, Math.min(12, height - 31));
   const expandedActivityRows = Math.max(8, height - 16);
   const compactAgentRows = height < 28 ? 3 : 5;
   const compactActivityRows = Math.max(3, Math.min(12, height - 27));
@@ -1788,65 +1819,39 @@ export function MissionCockpit({
     );
   }
 
-  // Railed compact cockpit: on laptops rows are scarce and columns are
-  // cheap, so the status banner turns into a slim left rail, buying back
-  // 3 rows — enough for a dense Focus panel beside the windowed roster.
-  if (compact) {
-    const railWidth = Math.min(18, Math.max(14, Math.floor(width * 0.12)));
-    const mainWidth = width - railWidth;
-    const mainLeft = Math.floor(mainWidth * 0.5);
-    const mainRight = mainWidth - mainLeft;
-
-    return (
-      <Box width={width}>
-        <SideRail state={state} width={railWidth} metrics={metrics} />
-        <Box width={mainWidth} flexDirection="column">
-          <Box width={mainWidth}>
-            <Box width={mainLeft}>
-              <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={mainLeft} agentTurns={agentTurns} briefVersion={latestBriefVersion} dense />
-            </Box>
-            <Box width={mainRight}>
-              <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={mainRight} maxRows={compactAgentRows} />
-            </Box>
-          </Box>
-          <ActivityPanel
-            state={state}
-            activityTab={activityTab}
-            scrollOffset={activityScrollOffset}
-            active={activePanel === "activity"}
-            width={mainWidth}
-            contentRows={compactActivityRows}
-            reasoningArtifacts={reasoningArtifacts}
-            agentTurns={agentTurns}
-          />
-          <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={mainWidth} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
-        </Box>
-      </Box>
-    );
-  }
+  // One identity for every screen size: the ORVIX rail on the left, the
+  // working panels beside it. Compact terminals get the dense Focus panel
+  // and a smaller roster window; tall ones get the full panels — but the
+  // structure (and the brand) never jumps around as the window resizes.
+  const railWidth = 21;
+  const mainWidth = width - railWidth;
+  const mainLeft = Math.floor(mainWidth * 0.5);
+  const mainRight = mainWidth - mainLeft;
 
   return (
-    <Box flexDirection="column">
-      <TopStatus state={state} width={width} metrics={metrics} />
-      <Box width={width}>
-        <Box width={leftWidth}>
-          <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} agentTurns={agentTurns} briefVersion={latestBriefVersion} />
+    <Box width={width}>
+      <SideRail state={state} width={railWidth} metrics={metrics} />
+      <Box width={mainWidth} flexDirection="column">
+        <Box width={mainWidth}>
+          <Box width={mainLeft}>
+            <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={mainLeft} agentTurns={agentTurns} briefVersion={latestBriefVersion} dense={compact} />
+          </Box>
+          <Box width={mainRight}>
+            <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={mainRight} maxRows={compact ? compactAgentRows : fullAgentRows} />
+          </Box>
         </Box>
-        <Box width={rightWidth}>
-          <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={rightWidth} maxRows={fullAgentRows} />
-        </Box>
+        <ActivityPanel
+          state={state}
+          activityTab={activityTab}
+          scrollOffset={activityScrollOffset}
+          active={activePanel === "activity"}
+          width={mainWidth}
+          contentRows={compact ? compactActivityRows : normalActivityRows}
+          reasoningArtifacts={reasoningArtifacts}
+          agentTurns={agentTurns}
+        />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={mainWidth} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
       </Box>
-      <ActivityPanel
-        state={state}
-        activityTab={activityTab}
-        scrollOffset={activityScrollOffset}
-        active={activePanel === "activity"}
-        width={width}
-        contentRows={normalActivityRows}
-        reasoningArtifacts={reasoningArtifacts}
-        agentTurns={agentTurns}
-      />
-      <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
     </Box>
   );
 }

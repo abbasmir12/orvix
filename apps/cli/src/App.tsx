@@ -806,6 +806,22 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     }
   });
 
+  // Ink never erases rows above a new frame that is SHORTER than the last
+  // one, so switching from the tall planning console to the cockpit leaves
+  // stale planning rows pinned at the top. Hard-clear the alt screen on the
+  // phase boundary (and on resize) so each layout starts from a clean slate.
+  const inPlanningPhase = state.phase === "loading" || state.phase === "briefing" || state.phase === "organizing";
+  useEffect(() => {
+    process.stdout.write("[2J[3J[H");
+  }, [inPlanningPhase]);
+  useEffect(() => {
+    const onResize = () => process.stdout.write("[2J[3J[H");
+    process.stdout.on("resize", onResize);
+    return () => {
+      process.stdout.off("resize", onResize);
+    };
+  }, []);
+
   useEffect(() => {
     if (mode !== "mock") {
       return;
