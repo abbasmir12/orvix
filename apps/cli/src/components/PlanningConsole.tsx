@@ -566,13 +566,17 @@ export function PlanningConsole({
   const { stdin, isRawModeSupported } = useStdin();
   const width = Math.max(72, stdout.columns ?? 80);
   const termRows = stdout.rows ?? 34;
-  const compact = termRows < 30;
 
   const [scroll, setScroll] = useState<Record<PanelId, number>>({ broadcast: 0, book: 0, trace: 0 });
   const [focus, setFocus] = useState<PanelId>("broadcast");
   const regionsRef = useRef<Partial<Record<PanelId, Rect>>>({});
 
-  const FEED_ROWS = compact ? 7 : 11;
+  // Both feed rows (plus header and borders) must fit the real terminal
+  // height — the console previously used fixed heights and overflowed
+  // smaller windows. Chrome = header (3-4 rows) + per-row borders/padding.
+  const chromeRows = (mode === "cloud" ? 4 : 3) + 12;
+  const FEED_ROWS = Math.max(4, Math.min(14, Math.floor((termRows - chromeRows) / 2)));
+  const compact = FEED_ROWS < 9;
 
   function scrollPanel(panel: PanelId, delta: number) {
     setScroll((current) => ({ ...current, [panel]: Math.max(0, (current[panel] ?? 0) + delta) }));
@@ -641,9 +645,11 @@ export function PlanningConsole({
   const innerMissionWidth = Math.max(24, missionPanelWidth - 4);
   const innerRailWidth = Math.max(20, railWidth - 4);
   const innerOrgWidth = Math.max(24, orgPanelWidth - 4);
-  const featureList = stringArray(missionAnalysis?.features ?? state.analysis.features).slice(0, compact ? 3 : 5);
+  // The mission panel shares row space with the feeds: cap its lists so the
+  // left column never grows taller than the adaptive feed boxes beside it.
+  const featureList = stringArray(missionAnalysis?.features ?? state.analysis.features).slice(0, Math.max(2, Math.min(5, FEED_ROWS - 4)));
   const riskList = stringArray(missionAnalysis?.risks ?? state.analysis.risks).slice(0, compact ? 2 : 3);
-  const visibleTasks = state.tasks.slice(0, compact ? 4 : 6);
+  const visibleTasks = state.tasks.slice(0, Math.max(3, Math.min(6, FEED_ROWS - 3)));
   const leftWidth = Math.floor(width * 0.52);
   const rightWidth = width - leftWidth;
 

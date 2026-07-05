@@ -10,14 +10,20 @@ type RunMode = "mock" | "cloud";
 function Root({
   initialMission,
   initialMode,
-  apiUrl
+  apiUrl,
+  resumeId
 }: {
   initialMission?: string;
   initialMode: RunMode;
   apiUrl?: string;
+  resumeId?: string;
 }) {
   const [mission, setMission] = useState(initialMission ?? "");
   const [mode, setMode] = useState<RunMode>(initialMode);
+
+  if (resumeId) {
+    return <App mission={mission || `Resuming ${resumeId}`} mode="cloud" apiUrl={apiUrl} resumeId={resumeId} />;
+  }
 
   if (mission) {
     return <App mission={mission} mode={mode} apiUrl={apiUrl} />;
@@ -33,7 +39,7 @@ function Root({
 const enableAltScreen = "[?1049h";
 const disableAltScreen = "[?1049l";
 
-async function runMission(missionParts: string[] = [], options: { mode?: RunMode; apiUrl?: string } = {}) {
+async function runMission(missionParts: string[] = [], options: { mode?: RunMode; apiUrl?: string; resume?: string } = {}) {
   const mission = missionParts.join(" ").trim();
   process.stdout.write(enableAltScreen);
   const restore = () => process.stdout.write(disableAltScreen);
@@ -44,6 +50,7 @@ async function runMission(missionParts: string[] = [], options: { mode?: RunMode
         initialMission={mission || undefined}
         initialMode={options.mode ?? "mock"}
         apiUrl={options.apiUrl}
+        resumeId={options.resume}
       />
     );
     await instance.waitUntilExit();
@@ -65,9 +72,10 @@ program
   .description("Analyze a product mission and run the mock multi-agent delivery simulation")
   .option("--mode <mode>", "Run mode: mock or cloud", "mock")
   .option("--api-url <url>", "Orvix API URL for cloud mode", "http://localhost:8787")
-  .action(async (request: string[] = [], options: { mode?: string; apiUrl?: string }) => {
+  .option("--resume <missionId>", "Resume a mission from the API's disk snapshots (implies cloud mode)")
+  .action(async (request: string[] = [], options: { mode?: string; apiUrl?: string; resume?: string }) => {
     const mode = options.mode === "cloud" ? "cloud" : "mock";
-    await runMission(request, { mode, apiUrl: options.apiUrl });
+    await runMission(request, { mode, apiUrl: options.apiUrl, resume: options.resume });
   });
 
 program.action(async () => {

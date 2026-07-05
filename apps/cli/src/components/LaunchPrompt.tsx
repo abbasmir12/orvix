@@ -141,8 +141,8 @@ export function LaunchPrompt({ mode, onModeChange, apiUrl, onSubmit }: LaunchPro
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       <Box flexDirection="column" alignItems="center" marginBottom={1}>
         <BrandMark />
-        <Text color={theme.muted}>Self-organizing AI engineering company</Text>
-        <Text color={theme.faint}>Global AI Hackathon with Qwen Cloud — Track 3: Agent Society</Text>
+        <Text color={theme.muted}>From product request to reviewed code, shipped by agents</Text>
+        <Text color={theme.faint}>Parallel AI Agency for autonomous software delivery</Text>
       </Box>
 
       <Box justifyContent="center" marginTop={1}>

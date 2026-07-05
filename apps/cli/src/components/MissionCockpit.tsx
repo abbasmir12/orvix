@@ -26,6 +26,7 @@ type MissionCockpitProps = {
   executionStatus: string;
   agentTurns: AgentTurnEvent[];
   metrics: RunMetricsSummary | null;
+  commandDraft: string | null;
 };
 
 const fit = (value: string, width: number) => {
@@ -141,87 +142,139 @@ function PanelTitle({ title, active }: { title: string; active: boolean }) {
   );
 }
 
+const phaseColor = (phase: SimulationState["phase"]) =>
+  phase === "final" ? theme.success : phase === "executing" ? theme.cloud : theme.warning;
+
 function TopStatus({ state, width, metrics }: { state: SimulationState; width: number; metrics?: RunMetricsSummary | null }) {
   const active = state.agents.filter((agent) => agent.status === "active").length;
   const blocked = state.agents.filter((agent) => agent.status === "blocked").length;
-  const returned = state.agentCalls.filter((call) => call.status === "returned").length;
   const approved = state.pullRequests.filter((pr) => pr.status === "Approved").length;
-
-  const status = `${state.analysis.id}  ${state.phase}  calls ${returned}/${state.agentCalls.length}  prs ${approved}/${state.pullRequests.length}  active ${active}  blocked ${blocked}`;
-  const metricsText = metrics
-    ? `${metrics.qwenCalls} calls  ${metrics.totalTokens.toLocaleString()} tok  ${metrics.filesWritten} files  ${Math.round(metrics.wallClockMs / 1000)}s`
-    : "";
-  const statusWidth = Math.max(16, width - 12 - (metricsText ? metricsText.length + 2 : 0));
+  const tasksDone = state.tasks.filter((task) => task.status === "completed").length;
+  const elapsed = metrics ? `${Math.floor(metrics.wallClockMs / 60000)}:${String(Math.floor((metrics.wallClockMs % 60000) / 1000)).padStart(2, "0")}` : "";
+  const sep = <Text color={theme.faint}>  │  </Text>;
 
   return (
-    <Box width={width} borderStyle="round" borderColor={theme.accent} paddingX={1} marginBottom={1} justifyContent="space-between">
+    <Box width={width} borderStyle="round" borderColor={theme.accentDim} paddingX={1} marginBottom={1} justifyContent="space-between">
       <Box>
-        <Text color={theme.accent} bold>{glyphs.ring} ORVIX</Text>
-        <Text color={theme.muted}>  {fit(status, statusWidth)}</Text>
+        <Text color={theme.accentBright} bold>{glyphs.ring} ORVIX</Text>
+        <Text color={theme.faint}>  {state.analysis.id}</Text>
+        {sep}
+        <Text color={phaseColor(state.phase)} bold>{state.phase.toUpperCase()}</Text>
+        {sep}
+        <Text color={theme.muted}>PRs </Text>
+        <Text color={approved === state.pullRequests.length && approved > 0 ? theme.success : theme.text}>{approved}</Text>
+        <Text color={theme.faint}>/{state.pullRequests.length}</Text>
+        {sep}
+        <Text color={theme.muted}>tasks </Text>
+        <Text color={theme.text}>{tasksDone}</Text>
+        <Text color={theme.faint}>/{state.tasks.length}</Text>
+        {sep}
+        <Text color={active > 0 ? theme.cloud : theme.muted}>{active}{glyphs.active}</Text>
+        <Text color={theme.faint}> </Text>
+        <Text color={blocked > 0 ? theme.danger : theme.faint}>{blocked}{glyphs.blocked}</Text>
       </Box>
       {metrics ? (
         <Text>
-          <Text color={theme.cloud}>{metrics.qwenCalls} calls</Text>
-          <Text color={theme.muted}>  </Text>
-          <Text color={theme.accent}>{metrics.totalTokens.toLocaleString()} tok</Text>
-          <Text color={theme.muted}>  </Text>
+          <Text color={theme.accent}>{metrics.totalTokens >= 1000 ? `${Math.round(metrics.totalTokens / 1000)}k` : metrics.totalTokens} tok</Text>
+          <Text color={theme.faint}> · </Text>
           <Text color={theme.success}>{metrics.filesWritten} files</Text>
-          <Text color={theme.muted}>  {Math.round(metrics.wallClockMs / 1000)}s</Text>
+          <Text color={theme.faint}> · </Text>
+          <Text color={theme.muted}>{elapsed}</Text>
         </Text>
       ) : null}
     </Box>
   );
 }
 
+const prStatusColor = (status: string) =>
+  status === "Approved" ? theme.success : status === "Changes requested" ? theme.warning : status === "In progress" ? theme.cloud : theme.muted;
+
+function contextMeterColor(percent: number) {
+  return percent >= 80 ? theme.danger : percent >= 60 ? theme.warning : theme.success;
+}
+
 function FocusPanel({
   state,
   selectedAgent,
   active,
-  width
+  width,
+  agentTurns
 }: {
   state: SimulationState;
   selectedAgent: Agent;
   active: boolean;
   width: number;
+  agentTurns: AgentTurnEvent[];
 }) {
-  const relatedCalls = state.agentCalls.filter(
-    (call) => call.from === selectedAgent.name || call.to === selectedAgent.name
-  );
   const relatedPr = state.pullRequests.find((pr) => pr.ownerAgentId === selectedAgent.id || pr.ownerName === selectedAgent.name);
+  const ownedTask = state.tasks.find((task) => task.ownerAgentId === selectedAgent.id);
   const progress = Math.round(
     state.agents.reduce((sum, agent) => sum + agent.progress, 0) / Math.max(1, state.agents.length)
   );
+  const agentEvents = agentTurns.filter((turn) => turn.agentId === selectedAgent.id);
+  const lastTool = [...agentEvents].reverse().find((turn) => turn.kind === "tool");
+  const lastContext = [...agentEvents].reverse().find((turn) => turn.context)?.context;
 
   const contentWidth = Math.max(20, width - 4);
   const nameWidth = Math.max(12, Math.min(24, contentWidth - 10));
   const textWidth = Math.max(14, contentWidth - 1);
+  const barWidth = Math.max(10, Math.min(24, contentWidth - 12));
 
   return (
     <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} paddingY={1}>
       <PanelTitle title="Focus" active={active} />
       <Box marginTop={1}>
         <Text color={statusColor(selectedAgent.status)}>{statusSymbol(selectedAgent.status)} </Text>
-        <Text bold>{fit(selectedAgent.name, nameWidth)}</Text>
-        <Text color={theme.muted}>{selectedAgent.status}</Text>
+        <Text bold color={theme.text}>{fit(selectedAgent.name, nameWidth)}</Text>
+        <Text color={statusColor(selectedAgent.status)}>{selectedAgent.status}</Text>
       </Box>
       <Text color={theme.muted}>{fit(selectedAgent.role, textWidth)}</Text>
-      <Box marginTop={1}>
-        <Text color={theme.muted}>Now: </Text>
-        <Text>{fit(selectedAgent.currentActivity, Math.max(12, contentWidth - 6))}</Text>
-      </Box>
+      {ownedTask ? (
+        <Box marginTop={1}>
+          <Text color={theme.faint}>task </Text>
+          <Text color={theme.text}>{fit(ownedTask.title, Math.max(12, contentWidth - 6))}</Text>
+        </Box>
+      ) : null}
       <Box>
-        <Text color={theme.muted}>{progressBar(selectedAgent.progress, 12)} </Text>
-        <Text>{selectedAgent.progress}%</Text>
+        <Text color={theme.faint}>now  </Text>
+        <Text color={theme.muted}>{fit(selectedAgent.currentActivity, Math.max(12, contentWidth - 6))}</Text>
+      </Box>
+      {lastTool ? (
+        <Box>
+          <Text color={theme.faint}>last </Text>
+          <Text color={lastTool.ok === false ? theme.danger : theme.cloud}>{lastTool.tool}</Text>
+          <Text color={theme.muted}> {fit(lastTool.path ?? lastTool.detail ?? "", Math.max(8, contentWidth - 7 - (lastTool.tool?.length ?? 0)))}</Text>
+        </Box>
+      ) : null}
+      <Box marginTop={1}>
+        <Text color={theme.faint}>work </Text>
+        <Text color={theme.muted}>{progressBar(selectedAgent.progress, barWidth)} </Text>
+        <Text color={theme.text}>{selectedAgent.progress}%</Text>
+      </Box>
+      {lastContext ? (
+        <Box>
+          <Text color={theme.faint}>ctx  </Text>
+          <Text color={contextMeterColor(lastContext.percent)}>{progressBar(Math.min(100, lastContext.percent), barWidth)} </Text>
+          <Text color={contextMeterColor(lastContext.percent)}>{lastContext.percent}%</Text>
+          <Text color={theme.faint}> of {Math.round(lastContext.windowTokens / 1024)}k</Text>
+        </Box>
+      ) : null}
+      <Box>
+        <Text color={theme.faint}>org  </Text>
+        <Text color={theme.muted}>{progressBar(progress, barWidth)} </Text>
+        <Text color={theme.text}>{progress}%</Text>
       </Box>
       <Box marginTop={1}>
-        <Text color={theme.muted}>Org: </Text>
-        <Text>{progressBar(progress, 10)} </Text>
-        <Text>{progress}%</Text>
-      </Box>
-      <Box marginTop={1} flexDirection="column">
-        <Text color={theme.muted}>Work</Text>
-        <Text>{relatedPr ? fit(`#${relatedPr.id} ${relatedPr.branch} · ${relatedPr.status}`, textWidth) : "No PR owned yet"}</Text>
-        <Text>{relatedCalls[0] ? fit(`${relatedCalls[0].from} → ${relatedCalls[0].to}`, textWidth) : "No delegation edge"}</Text>
+        <Text color={theme.faint}>PR   </Text>
+        {relatedPr ? (
+          <Text>
+            <Text color={theme.text}>#{relatedPr.id} </Text>
+            <Text color={prStatusColor(relatedPr.status)}>{relatedPr.status}</Text>
+            <Text color={theme.faint}> {fit(relatedPr.branch, Math.max(6, contentWidth - 10 - relatedPr.status.length))}</Text>
+          </Text>
+        ) : (
+          <Text color={theme.faint}>none opened yet</Text>
+        )}
       </Box>
     </Box>
   );
@@ -1397,14 +1450,18 @@ function MenuScreen({ state, width, mode }: { state: SimulationState; width: num
   );
 }
 
+/**
+ * Bottom bar with a real prompt. Closed: a single clean hint line plus the
+ * live status. Open (user pressed /): an input line with cursor where slash
+ * commands run and plain text is posted to the agents as mission guidance.
+ */
 function CommandBar({
-  activePanel,
-  expandedPanel,
   active,
   width,
   mode,
   missionId,
-  executionStatus
+  executionStatus,
+  commandDraft
 }: {
   activePanel: CockpitPanel;
   expandedPanel: CockpitPanel | null;
@@ -1413,23 +1470,28 @@ function CommandBar({
   mode: "mock" | "cloud";
   missionId: string | null;
   executionStatus: string;
+  commandDraft: string | null;
 }) {
-  const executionHint = mode === "cloud" && missionId
-    ? `a autopilot · x execute next · r run selected · v review PR · ${executionStatus}`
-    : executionStatus;
-
   const isLive = mode === "cloud" && Boolean(missionId);
+  const promptOpen = commandDraft !== null;
 
   return (
-    <Box width={width} borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} marginTop={1} flexDirection="column">
-	      <Text>
-	        <Text color={theme.accent}>{glyphs.chevron} </Text>
-	        <Text color={theme.muted}>{fit(`Tab switch · ↑/↓ ${activePanel === "activity" || expandedPanel === "activity" ? "scroll" : "agents"} · wheel activity · Enter inspect · 0 home · m menu · 1-6 tabs (1 live turns) · e ${expandedPanel ? "restore" : "expand"} · q quit`, Math.max(24, width - 6))}</Text>
-	      </Text>
-      <Text>
-        <Text color={isLive ? theme.cloud : theme.muted}>{glyphs.arrow} </Text>
-        <Text color={isLive ? theme.cloud : theme.muted}>{fit(executionHint, Math.max(24, width - 6))}</Text>
-      </Text>
+    <Box width={width} borderStyle="round" borderColor={promptOpen ? theme.accent : active ? theme.accent : theme.border} paddingX={1} marginTop={1} flexDirection="column">
+      {promptOpen ? (
+        <Text>
+          <Text color={theme.accentBright} bold>{glyphs.chevron} </Text>
+          <Text color={theme.text}>{fit(`${commandDraft}▌`, Math.max(24, width - 6))}</Text>
+        </Text>
+      ) : (
+        <Box justifyContent="space-between">
+          <Text>
+            <Text color={theme.accent}>{glyphs.chevron} </Text>
+            <Text color={theme.muted}>/ command or guidance</Text>
+            <Text color={theme.faint}>  ·  tab panels · ←→ tabs · ↑↓ move · enter inspect · e expand · q quit</Text>
+          </Text>
+          <Text color={isLive ? theme.cloud : theme.faint}>{fit(executionStatus, Math.max(12, Math.min(52, width - 60)))}</Text>
+        </Box>
+      )}
     </Box>
   );
 }
@@ -1450,7 +1512,8 @@ export function MissionCockpit({
   missionId,
   executionStatus,
   agentTurns,
-  metrics
+  metrics,
+  commandDraft
 }: MissionCockpitProps) {
   const { stdout } = useStdout();
   const width = Math.max(72, stdout.columns ?? 80);
@@ -1486,8 +1549,8 @@ export function MissionCockpit({
     return (
       <Box flexDirection="column">
         <TopStatus state={state} width={width} metrics={metrics} />
-        <FocusPanel state={state} selectedAgent={selectedAgent} active width={width} />
-        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
+        <FocusPanel state={state} selectedAgent={selectedAgent} active width={width} agentTurns={agentTurns} />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
       </Box>
     );
   }
@@ -1497,7 +1560,7 @@ export function MissionCockpit({
       <Box flexDirection="column">
         <TopStatus state={state} width={width} metrics={metrics} />
         <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active width={width} />
-        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
       </Box>
     );
   }
@@ -1516,7 +1579,7 @@ export function MissionCockpit({
 	          reasoningArtifacts={reasoningArtifacts}
 	          agentTurns={agentTurns}
 	        />
-        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
+        <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
       </Box>
     );
   }
@@ -1526,7 +1589,7 @@ export function MissionCockpit({
       <TopStatus state={state} width={width} metrics={metrics} />
       <Box width={width}>
         <Box width={leftWidth}>
-          <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} />
+          <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} agentTurns={agentTurns} />
         </Box>
         <Box width={rightWidth}>
           <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={rightWidth} />
@@ -1542,7 +1605,7 @@ export function MissionCockpit({
         reasoningArtifacts={reasoningArtifacts}
         agentTurns={agentTurns}
       />
-      <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} />
+      <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} />
     </Box>
   );
 }

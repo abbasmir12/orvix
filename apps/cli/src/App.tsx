@@ -14,7 +14,12 @@ type AppProps = {
   mission: string;
   mode?: "mock" | "cloud";
   apiUrl?: string;
+  /** Resume this mission id from the API's disk snapshots instead of creating a new one. */
+  resumeId?: string;
 };
+
+/** What the cloud connection should attach to: a fresh mission or a resumed one. */
+type MissionTarget = { kind: "new"; mission: string } | { kind: "resume"; missionId: string };
 
 type SseMessage = {
   event: string;
@@ -61,9 +66,13 @@ function parseSseMessages(buffer: string): { messages: SseMessage[]; rest: strin
   return { messages, rest };
 }
 
-export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }: AppProps) {
+export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", resumeId }: AppProps) {
   const { exit } = useApp();
   const { stdin } = useStdin();
+  const [missionTarget, setMissionTarget] = useState<MissionTarget>(
+    resumeId ? { kind: "resume", missionId: resumeId } : { kind: "new", mission }
+  );
+  const [commandDraft, setCommandDraft] = useState<string | null>(null);
   const initialState = useMemo(() => createInitialSimulation(mission), [mission]);
   const [state, setState] = useState(initialState);
   const [stepIndex, setStepIndex] = useState(0);
@@ -158,6 +167,103 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
     setActivePanel("activity");
   }
 
+  function cycleActivityTab(step: number) {
+    const currentIndex = activityTabs.indexOf(activityTab);
+    selectActivityTab(activityTabs[(currentIndex + step + activityTabs.length) % activityTabs.length]);
+  }
+
+  /** Executes a submitted prompt-bar line: /commands or plain-text guidance to the agents. */
+  async function runCommand(line: string) {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    if (!trimmed.startsWith("/")) {
+      // Plain text is live mission guidance: it lands in the Orvix Book as an
+      // urgent global note that agents read in their next session/context.
+      if (mode !== "cloud" || !missionId) {
+        setExecutionStatus("Guidance needs a live cloud mission");
+        return;
+      }
+      try {
+        const response = await fetch(`${apiUrl}/missions/${missionId}/book`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "decision",
+            fromAgentId: "mastermind-agent",
+            message: `User guidance: ${trimmed}`,
+            scope: "mission",
+            visibility: "global",
+            topics: ["user-guidance"],
+            priority: "high"
+          })
+        });
+        setExecutionStatus(response.ok ? "Guidance posted to Orvix Book — agents will pick it up" : `Guidance failed: ${response.status}`);
+      } catch (error) {
+        setExecutionStatus(actionErrorMessage(error, apiUrl));
+      }
+      return;
+    }
+
+    const [command, ...args] = trimmed.slice(1).split(/\s+/);
+    switch (command.toLowerCase()) {
+      case "help":
+        setExecutionStatus("/autopilot /next /review /missions /resume <id> /tab <name> /quit — plain text posts guidance to agents");
+        return;
+      case "quit":
+      case "exit":
+        exit();
+        return;
+      case "autopilot":
+        void runAgentExecution("autopilot");
+        return;
+      case "next":
+        void runAgentExecution("next");
+        return;
+      case "review":
+        void runAgentExecution("review");
+        return;
+      case "tab": {
+        const tab = activityTabs.find((candidate) => candidate.startsWith((args[0] ?? "").toLowerCase()));
+        if (tab) selectActivityTab(tab);
+        setExecutionStatus(tab ? `Switched to ${tab}` : `Unknown tab; tabs: ${activityTabs.join(", ")}`);
+        return;
+      }
+      case "missions": {
+        try {
+          const response = await fetch(`${apiUrl}/missions/disk`);
+          const payload = await response.json() as { runs?: Array<{ missionId: string; isComplete: boolean; mode: string }> };
+          const listing = (payload.runs ?? []).slice(0, 5)
+            .map((entry) => `${entry.missionId}${entry.isComplete ? " (done)" : ""}`)
+            .join(" · ");
+          setExecutionStatus(listing ? `On disk: ${listing} — /resume <id>` : "No missions on disk");
+        } catch (error) {
+          setExecutionStatus(actionErrorMessage(error, apiUrl));
+        }
+        return;
+      }
+      case "resume": {
+        const target = args[0];
+        if (!target) {
+          setExecutionStatus("Usage: /resume <missionId> (see /missions)");
+          return;
+        }
+        if (mode !== "cloud") {
+          setExecutionStatus("Resume needs cloud mode (orvix mission --mode cloud)");
+          return;
+        }
+        setAgentTurns([]);
+        setPlanningStages([]);
+        setReasoningArtifacts([]);
+        setMissionTarget({ kind: "resume", missionId: target });
+        setExecutionStatus(`Resuming ${target}...`);
+        return;
+      }
+      default:
+        setExecutionStatus(`Unknown command /${command} — try /help`);
+    }
+  }
+
 	  function scrollActivity(delta: number) {
 	    setActivityScroll((current) => ({
 	      ...current,
@@ -194,7 +300,39 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
   }, [activePanel, activityTab, expandedPanel, stdin]);
 
   useInput((input, key) => {
-    if ((key.ctrl && input === "c") || input === "q") {
+    if (key.ctrl && input === "c") {
+      exit();
+      return;
+    }
+
+    // Prompt bar captures every keystroke while open.
+    if (commandDraft !== null) {
+      if (key.escape) {
+        setCommandDraft(null);
+        return;
+      }
+      if (key.return) {
+        const line = commandDraft;
+        setCommandDraft(null);
+        void runCommand(line);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setCommandDraft((current) => (current && current.length > 0 ? current.slice(0, -1) : ""));
+        return;
+      }
+      if (input && !key.ctrl && !key.meta && !key.tab && !key.upArrow && !key.downArrow && !key.leftArrow && !key.rightArrow) {
+        setCommandDraft((current) => `${current ?? ""}${input}`);
+      }
+      return;
+    }
+
+    if (input === "/") {
+      setCommandDraft("/");
+      return;
+    }
+
+    if (input === "q") {
       exit();
       return;
     }
@@ -294,6 +432,11 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
       if (key.downArrow) scrollActivity(-1);
       if (pageUp) scrollActivity(6);
       if (pageDown) scrollActivity(-6);
+      return;
+    }
+
+    if (key.leftArrow || key.rightArrow) {
+      cycleActivityTab(key.rightArrow ? 1 : -1);
       return;
     }
 
@@ -410,19 +553,31 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
 
     async function connect() {
       try {
-        const createResponse = await fetch(`${apiUrl}/missions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mission, mode: "qwen" }),
-          signal: controller.signal
-        });
+        const createResponse = missionTarget.kind === "resume"
+          ? await fetch(`${apiUrl}/missions/${missionTarget.missionId}/resume`, {
+            method: "POST",
+            signal: controller.signal
+          })
+          : await fetch(`${apiUrl}/missions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mission: missionTarget.mission, mode: "qwen" }),
+            signal: controller.signal
+          });
 
         if (!createResponse.ok) {
-          throw new Error(`API returned ${createResponse.status}`);
+          throw new Error(missionTarget.kind === "resume"
+            ? `Resume failed for ${missionTarget.missionId} (${createResponse.status})`
+            : `API returned ${createResponse.status}`);
         }
 
         const created = await createResponse.json() as { missionId: string; eventsUrl: string };
         setMissionId(created.missionId);
+        const stateResponse = await fetch(`${apiUrl}/missions/${created.missionId}`, { signal: controller.signal });
+        if (stateResponse.ok) {
+          const snapshot = await stateResponse.json() as { state?: SimulationState };
+          if (snapshot.state) setState(snapshot.state);
+        }
         const reasoningResponse = await fetch(`${apiUrl}/missions/${created.missionId}/reasoning`, {
           signal: controller.signal
         });
@@ -509,7 +664,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
       cancelled = true;
       controller.abort();
     };
-  }, [apiUrl, mission, mode]);
+  }, [apiUrl, missionTarget, mode]);
 
   useEffect(() => {
     if (mode !== "cloud" || !missionId) return;
@@ -566,6 +721,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787" }
             executionStatus={executionStatus}
             agentTurns={agentTurns}
             metrics={metrics}
+            commandDraft={commandDraft}
           />
         )}
       </Box>

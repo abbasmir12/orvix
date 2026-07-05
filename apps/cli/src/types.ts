@@ -20,11 +20,22 @@ export type AgentTurnEvent = {
   branch: string;
   turn: number;
   at: string;
-  kind: "note" | "tool" | "harness";
+  kind: "note" | "tool" | "harness" | "compaction";
   tool?: string;
   path?: string;
   ok?: boolean;
   detail?: string;
+  context?: { promptTokens: number; windowTokens: number; percent: number };
+};
+
+/** One resumable run from GET /missions/disk. */
+export type DiskRunSummary = {
+  missionId: string;
+  mission: string;
+  mode: string;
+  createdAt: string;
+  isComplete: boolean;
+  inMemory: boolean;
 };
 
 /** Mirrors the API's metricsSummary payload (apps/api/src/run.ts) served at GET /missions/:id/metrics. */
