@@ -368,7 +368,7 @@ function AgentsPanel({
   const windowed = agents.slice(start, start + visibleRows);
 
   return (
-    <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} paddingY={1}>
+    <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1}>
       <Box justifyContent="space-between">
         <Text color={active ? theme.accent : theme.muted} bold>Agent Network</Text>
         <Text color={theme.faint}>
@@ -1703,13 +1703,19 @@ export function MissionCockpit({
   // activity box (rows + 6) + prompt bar 5. Solving for activity rows keeps
   // the WHOLE frame within the terminal — ink anchors to the bottom, so any
   // overflow clips the top, which is the worst possible failure mode.
-  const compact = height < 35;
-  const normalActivityRows = Math.max(3, Math.min(8, height - 31));
-  const expandedActivityRows = Math.max(8, height - 15);
-  // Railed compact budget: dense focus box ≈ 11 rows (row-mate caps the
-  // roster at 5 visible agents), prompt bar 4, activity fills the rest.
-  const compactAgentRows = 5;
-  const compactActivityRows = Math.max(3, Math.min(12, height - 21));
+  // Exact row accounting (borders + padding + margins all counted):
+  //   activity box   = rows + 7  (border 2, padding 2, tabs 1, gap 1, footer 1)
+  //   prompt bar     = 5         (margin 1, border 2, input 1, hint 1)
+  //   full top bar   = 4         (border 2, content 1, margin 1)
+  //   full focus box = 17        (border 2, padding 2, ~13 content)
+  //   dense focus    = 11        (border 2, ~9 content)
+  //   roster panel   = maxRows + 6 (border 2, title 1, gap 1, ±more markers 2)
+  // Underestimating clips the TOP (ink bottom-anchors), so budgets round down.
+  const compact = height < 40;
+  const normalActivityRows = Math.max(3, Math.min(8, height - 35));
+  const expandedActivityRows = Math.max(8, height - 16);
+  const compactAgentRows = height < 28 ? 3 : 5;
+  const compactActivityRows = Math.max(3, Math.min(12, height - 27));
   const fullAgentRows = 11;
   const selectedAgent = state.agents[Math.min(selectedAgentIndex, state.agents.length - 1)] ?? state.agents[0];
   const latestBriefVersion = reasoningArtifacts.reduce((latest, artifact) => {
