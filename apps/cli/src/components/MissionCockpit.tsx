@@ -295,35 +295,59 @@ function AgentsPanel({
   agents,
   selectedAgentIndex,
   active,
-  width
+  width,
+  maxRows = 32
 }: {
   agents: Agent[];
   selectedAgentIndex: number;
   active: boolean;
   width: number;
+  /** Visible roster rows: a 13-agent org must not grow the panel past the terminal. */
+  maxRows?: number;
 }) {
   const contentWidth = Math.max(20, width - 4);
   const nameWidth = Math.max(12, Math.floor(contentWidth * 0.42));
   const activityWidth = Math.max(10, contentWidth - nameWidth - 5);
 
+  // Window the roster around the selection so ↑/↓ always keeps it visible.
+  const visibleRows = Math.max(3, Math.min(agents.length, maxRows));
+  let start = Math.max(0, Math.min(selectedAgentIndex - Math.floor(visibleRows / 2), agents.length - visibleRows));
+  const hiddenAbove = start;
+  const hiddenBelow = agents.length - (start + visibleRows);
+  const windowed = agents.slice(start, start + visibleRows);
+
   return (
     <Box width={width} flexDirection="column" borderStyle="round" borderColor={active ? theme.accent : theme.border} paddingX={1} paddingY={1}>
-      <PanelTitle title="Agent Network" active={active} />
+      <Box justifyContent="space-between">
+        <Text color={active ? theme.accent : theme.muted} bold>Agent Network</Text>
+        <Text color={theme.faint}>
+          {agents.filter((agent) => agent.status === "completed").length}/{agents.length} done{active ? " · selected" : ""}
+        </Text>
+      </Box>
       <Box marginTop={1} flexDirection="column">
-        {agents.map((agent, index) => (
-          <Box key={agent.id}>
-            <Box width={2}>
-              <Text color={index === selectedAgentIndex ? theme.accent : theme.muted}>{index === selectedAgentIndex ? "›" : " "}</Text>
+        {hiddenAbove > 0 ? (
+          <Text color={theme.faint}>    ↑ {hiddenAbove} more</Text>
+        ) : null}
+        {windowed.map((agent, offset) => {
+          const index = start + offset;
+          return (
+            <Box key={agent.id}>
+              <Box width={2}>
+                <Text color={index === selectedAgentIndex ? theme.accent : theme.muted}>{index === selectedAgentIndex ? "›" : " "}</Text>
+              </Box>
+              <Box width={2}>
+                <Text color={statusColor(agent.status)}>{statusSymbol(agent.status)}</Text>
+              </Box>
+              <Box width={nameWidth}>
+                <Text>{fit(agent.name, Math.max(1, nameWidth - 1))}</Text>
+              </Box>
+              <Text color={theme.muted}>{fit(agent.currentActivity, activityWidth)}</Text>
             </Box>
-            <Box width={2}>
-              <Text color={statusColor(agent.status)}>{statusSymbol(agent.status)}</Text>
-            </Box>
-            <Box width={nameWidth}>
-              <Text>{fit(agent.name, Math.max(1, nameWidth - 1))}</Text>
-            </Box>
-            <Text color={theme.muted}>{fit(agent.currentActivity, activityWidth)}</Text>
-          </Box>
-        ))}
+          );
+        })}
+        {hiddenBelow > 0 ? (
+          <Text color={theme.faint}>    ↓ {hiddenBelow} more</Text>
+        ) : null}
       </Box>
     </Box>
   );
@@ -1624,8 +1648,17 @@ export function MissionCockpit({
   const height = Math.max(24, stdout.rows ?? 32);
   const leftWidth = Math.floor(width * 0.5);
   const rightWidth = width - leftWidth;
-  const normalActivityRows = Math.max(4, Math.min(8, height - 26));
+  // Height budget (rows): top status 3 + panels row (focus box ≈ 17) +
+  // activity box (rows + 6) + prompt bar 5. Solving for activity rows keeps
+  // the WHOLE frame within the terminal — ink anchors to the bottom, so any
+  // overflow clips the top, which is the worst possible failure mode.
+  const compact = height < 35;
+  const normalActivityRows = Math.max(3, Math.min(8, height - 31));
   const expandedActivityRows = Math.max(8, height - 15);
+  const compactBudget = Math.max(8, height - 23);
+  const compactAgentRows = Math.max(3, Math.round(compactBudget * 0.55));
+  const compactActivityRows = Math.max(3, compactBudget - compactAgentRows);
+  const fullAgentRows = 11;
   const selectedAgent = state.agents[Math.min(selectedAgentIndex, state.agents.length - 1)] ?? state.agents[0];
   const latestBriefVersion = reasoningArtifacts.reduce((latest, artifact) => {
     if (artifact.kind !== "mission_brief" || !artifact.content) return latest;
@@ -1697,24 +1730,50 @@ export function MissionCockpit({
     );
   }
 
+  const focusPr = state.pullRequests.find((pr) => pr.ownerAgentId === selectedAgent?.id);
+  const focusContext = [...agentTurns].reverse().find((turn) => turn.agentId === selectedAgent?.id && turn.context)?.context;
+
   return (
     <Box flexDirection="column">
       <TopStatus state={state} width={width} metrics={metrics} />
-      <Box width={width}>
-        <Box width={leftWidth}>
-          <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} agentTurns={agentTurns} briefVersion={latestBriefVersion} />
+      {compact ? (
+        <>
+          {/* Compact cockpit: one-line focus strip + full-width windowed roster. */}
+          <Box width={width} borderStyle="round" borderColor={activePanel === "focus" ? theme.accent : theme.border} paddingX={1}>
+            <Text>
+              <Text color={statusColor(selectedAgent.status)}>{statusSymbol(selectedAgent.status)} </Text>
+              <Text bold color={theme.text}>{fit(selectedAgent.name, 24)}</Text>
+              <Text color={statusColor(selectedAgent.status)}> {selectedAgent.status}</Text>
+              <Text color={theme.faint}> · {selectedAgent.progress}%</Text>
+              {focusContext ? <Text color={contextMeterColor(focusContext.percent)}> · ctx {focusContext.percent}%</Text> : null}
+              {focusPr ? (
+                <Text>
+                  <Text color={theme.faint}> · PR #{focusPr.id} </Text>
+                  <Text color={prStatusColor(focusPr.status)}>{focusPr.status}</Text>
+                </Text>
+              ) : null}
+              {latestBriefVersion && selectedAgent.id === "mastermind-agent" ? <Text color={theme.success}> · debrief v{latestBriefVersion} (7)</Text> : null}
+            </Text>
+          </Box>
+          <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={width} maxRows={compactAgentRows} />
+        </>
+      ) : (
+        <Box width={width}>
+          <Box width={leftWidth}>
+            <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} agentTurns={agentTurns} briefVersion={latestBriefVersion} />
+          </Box>
+          <Box width={rightWidth}>
+            <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={rightWidth} maxRows={fullAgentRows} />
+          </Box>
         </Box>
-        <Box width={rightWidth}>
-          <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={rightWidth} />
-        </Box>
-      </Box>
+      )}
       <ActivityPanel
         state={state}
         activityTab={activityTab}
         scrollOffset={activityScrollOffset}
         active={activePanel === "activity"}
         width={width}
-        contentRows={normalActivityRows}
+        contentRows={compact ? compactActivityRows : normalActivityRows}
         reasoningArtifacts={reasoningArtifacts}
         agentTurns={agentTurns}
       />

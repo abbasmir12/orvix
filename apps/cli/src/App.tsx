@@ -10,6 +10,7 @@ import {
   simulationSteps
 } from "./data/mockSimulation.js";
 import type { AgentTurnEvent, PlanningStageEvent, ReasoningArtifact, RunMetricsSummary, SimulationState } from "./types.js";
+import { cliConfig } from "./lib/config.js";
 
 type AppProps = {
   mission: string;
@@ -543,7 +544,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
 
   useEffect(() => {
     const activityHasFocus = activePanel === "activity" || expandedPanel === "activity";
-    if (!activityHasFocus || !stdin) {
+    if (!cliConfig.mouseTrack || !activityHasFocus || !stdin) {
       return;
     }
 

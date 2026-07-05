@@ -4,6 +4,7 @@ import { progressBar } from "../lib/progress.js";
 import { theme, glyphs } from "../lib/theme.js";
 import { bottomWindow, scrollbarGlyph, hitTestRegions, parseMouseEvents, type Rect } from "../lib/scroll.js";
 import type { PlanningStageEvent, PlanningStageId, ReasoningArtifact, SimulationState } from "../types.js";
+import { cliConfig } from "../lib/config.js";
 
 type PlanningConsoleProps = {
   state: SimulationState;
@@ -600,7 +601,8 @@ export function PlanningConsole({
   useEffect(() => {
     // Raw mode itself is already owned by the useInput() hook above (Ink
     // ref-counts it); this effect only toggles mouse reporting modes.
-    if (!stdin || !isRawModeSupported) return;
+    // Disabled entirely via ~/.orvix/cli.json mouseTrack:false (slow SSH).
+    if (!cliConfig.mouseTrack || !stdin || !isRawModeSupported) return;
     process.stdout.write("[?1000h[?1003h[?1006h");
 
     const onData = (chunk: Buffer | string) => {
@@ -690,6 +692,68 @@ export function PlanningConsole({
     book: { x0: 1, y0: row2Y0, x1: leftWidth, y1: row2Y1 },
     trace: { x0: leftWidth + 1, y0: row2Y0, x1: width, y1: row2Y1 }
   };
+
+  // Compact "planning ticker" for short terminals (laptops, SSH panes):
+  // the rich three-panel layout cannot fit, and ink anchors to the bottom —
+  // so instead of clipping the top, collapse to a one-column view: header,
+  // stage strip, live feed, latest signal. Everything essential, zero clip.
+  if (termRows < 32) {
+    const stageShortLabels: Record<PlanningStageId, string> = {
+      research: "Research",
+      council: "Council",
+      scaffold: "Scaffold",
+      analysis: "Analysis",
+      orvix_map: "Map",
+      organization: "Org",
+      rubric: "Rubric"
+    };
+    const compactFeedRows = Math.max(4, Math.min(12, termRows - 13));
+    const compactFeed = bookLines(bookAndResearchLines(state, reasoningArtifacts), Math.max(24, width - 7));
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Box borderStyle="round" borderColor={theme.accentDim} paddingX={1} justifyContent="space-between">
+          <Box>
+            <Text color={theme.accentBright} bold>{glyphs.ring} ORVIX</Text>
+            <Text color={theme.faint}>  planning  </Text>
+            <Text color={theme.text}>{fit(state.analysis.id, 16)}</Text>
+          </Box>
+          <Text>
+            <Text color={theme.muted}>{progressBar(progress, 10)} </Text>
+            <Text color={theme.accentBright} bold>{progress}%</Text>
+          </Text>
+        </Box>
+        <Box paddingX={1}>
+          <Text>
+            {planningStageOrder.map((stage) => {
+              const status = latestStage(planningStages, stage)?.status;
+              const color = status === "completed" ? theme.success
+                : status === "degraded" || status === "failed" ? theme.warning
+                  : status === "started" ? theme.cloud : theme.faint;
+              const glyph = status === "completed" ? glyphs.done
+                : status === "degraded" || status === "failed" ? glyphs.degraded
+                  : status === "started" ? glyphs.active : glyphs.queued;
+              return (
+                <Text key={stage}>
+                  <Text color={color}>{glyph} {stageShortLabels[stage]}</Text>
+                  <Text color={theme.faint}>{stage === "rubric" ? "" : "  "}</Text>
+                </Text>
+              );
+            })}
+          </Text>
+        </Box>
+        <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={0}>
+          <ScrollFeed lines={compactFeed} rows={compactFeedRows} scrollOffset={scroll.book} width={Math.max(24, width - 6)} focused interactive />
+        </Box>
+        <Box paddingX={1}>
+          <Text color={theme.muted}>{fit(`${glyphs.arrow} ${latestEvent?.message ?? "Waiting for planner signal…"}`, Math.max(24, width - 4))}</Text>
+        </Box>
+        <Box paddingX={1}>
+          <Text color={theme.faint}>↑/↓ scroll · Ctrl+C exit · widen the terminal for the full planning console</Text>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column" width={width}>
