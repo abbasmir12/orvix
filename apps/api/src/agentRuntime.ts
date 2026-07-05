@@ -20,7 +20,7 @@ import {
   listWorkspaceFiles,
   mergeWorkspaceBranch,
   readWorkspaceFile,
-  syncWorkspaceBranch,
+  beginOwnerConflictedSync,
   writeWorkspaceFile,
   type Workspace
 } from "@orvix/workspace";
@@ -123,11 +123,32 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
 
   const workspace = taskWorkspace as Workspace;
   if (options.revision) {
-    const sync = syncWorkspaceBranch(workspace, task.branch, "main");
-    if (sync.ok) {
+    // Owner revision: a conflicted merge is left in the tree with <<<<<<<
+    // markers so THIS agent (the owner) resolves it in-session; its commit
+    // completes the merge. Non-owner syncs elsewhere still fail-safe.
+    const sync = beginOwnerConflictedSync(workspace, task.branch, "main");
+    if (!sync.ok) {
+      appendEvent(run, `MasterMind could not pre-sync ${task.branch} before revision: ${sync.error}`, "warning");
+    } else if (sync.conflictedFiles.length === 0) {
       appendEvent(run, `MasterMind synced ${task.branch} with main before revision`, "success");
     } else {
-      appendEvent(run, `MasterMind could not pre-sync ${task.branch} before revision: ${sync.error}`, "warning");
+      appendEvent(run, `MasterMind staged a conflicted sync of ${task.branch}; ${agent.name} must resolve ${sync.conflictedFiles.length} file(s)`, "warning");
+      postBookEntry(run, {
+        type: "conflict",
+        fromAgentId: "mastermind-agent",
+        toAgentIds: [agent.id],
+        taskId: task.id,
+        scope: "task",
+        visibility: "mentioned",
+        topics: ["merge-conflict", "resolve-markers", task.branch],
+        priority: "urgent",
+        status: "open",
+        message: [
+          `Your branch ${task.branch} conflicts with main. The merge is staged in your worktree and these files contain <<<<<<< conflict markers:`,
+          ...sync.conflictedFiles.map((file) => `- ${file}`),
+          "FIRST read each listed file, rewrite it with the markers resolved (keep main's contracts, preserve your feature work), then commit_changes — your commit completes the merge. Do this before any other revision work."
+        ].join("\n")
+      });
     }
   }
 

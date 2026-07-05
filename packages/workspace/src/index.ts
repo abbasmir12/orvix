@@ -405,6 +405,54 @@ export function syncWorkspaceBranch(workspace: Workspace, branch: string, source
   }
 }
 
+/**
+ * Merge `sourceBranch` into `branch` for the branch OWNER's revision session.
+ * Unlike syncWorkspaceBranch (which aborts on conflict so a non-owner never
+ * destroys work), a conflict here is left in the working tree with standard
+ * <<<<<<< markers: the owning agent reads the marked files, resolves them,
+ * and its commit_changes (git add . + commit) completes the merge — the same
+ * flow a human uses. Returns the list of conflicted files.
+ */
+export function beginOwnerConflictedSync(
+  workspace: Workspace,
+  branch: string,
+  sourceBranch = "main"
+): { ok: true; conflictedFiles: string[]; output: string } | { ok: false; error: string } {
+  try {
+    const safeBranch = validateBranchName(branch);
+    const safeSourceBranch = validateBranchName(sourceBranch);
+    try {
+      runGit(workspace, ["checkout", safeBranch]);
+    } catch (checkoutError) {
+      // A previous conflicted sync may still be mid-merge; reset and retry.
+      try {
+        runGit(workspace, ["merge", "--abort"]);
+        runGit(workspace, ["checkout", safeBranch]);
+      } catch {
+        return { ok: false, error: errorMessage(checkoutError) };
+      }
+    }
+    try {
+      const output = runGit(workspace, ["merge", "--no-ff", safeSourceBranch, "-m", `sync: ${safeBranch} with ${safeSourceBranch}`]);
+      return { ok: true, conflictedFiles: [], output };
+    } catch {
+      const conflicted = runGit(workspace, ["diff", "--name-only", "--diff-filter=U"])
+        .split("\n").map((line) => line.trim()).filter(Boolean);
+      if (conflicted.length === 0) {
+        try {
+          runGit(workspace, ["merge", "--abort"]);
+        } catch {
+          // Nothing to abort.
+        }
+        return { ok: false, error: "merge failed without conflicted files" };
+      }
+      return { ok: true, conflictedFiles: conflicted, output: `Merge of ${safeSourceBranch} left conflicts in: ${conflicted.join(", ")}` };
+    }
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
 export function listWorkspaceFiles(workspace: Workspace, input: { path?: string; depth?: number } = {}): WorkspaceToolResult {
   try {
     const baseDir = resolveWorkspacePath(workspace, input.path ?? ".");

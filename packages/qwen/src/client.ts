@@ -437,7 +437,7 @@ export function createAgentSessionMessages(input: AgentSessionInput): ChatMessag
         "Alongside tool calls, write 1-2 short sentences of visible narration in your message content: what you found, what you are doing next, and why. This is streamed live to the user.",
         `Budget: at most ${input.maxTurns} turns and ${input.maxToolCalls} tool calls total. Spend them on concrete implementation, not repeated coordination.`,
         input.revision
-          ? "This is a REVISION turn. Read the reviewer feedback, read the current files on your branch, and change the actual source/config/test files the review calls out. Documentation-only responses will be rejected."
+          ? "This is a REVISION turn. Read the reviewer feedback, read the current files on your branch, and change the actual source/config/test files the review calls out. Documentation-only responses will be rejected. If the Orvix Book flags a merge conflict, files in your worktree contain <<<<<<< conflict markers: read them, rewrite each file with the markers resolved (keep main's contracts, preserve your feature), and commit_changes FIRST — your commit completes the merge."
           : "Your branch and worktree are already prepared; you do not need create_branch unless you want a different base.",
         "For an implementation task you must produce at least one write_file or delete_file with real content before finishing. A markdown status note is not implementation.",
         "Finish by calling open_pr with a title and summary once your work is committed (commit_changes first). Only use complete_task for explicitly review-only tasks.",
