@@ -4,6 +4,7 @@ import { Command } from "commander";
 import { render } from "ink";
 import { App } from "./App.js";
 import { LaunchPrompt } from "./components/LaunchPrompt.js";
+import { SetupWizard, type RuntimeProfile } from "./components/SetupWizard.js";
 
 type RunMode = "mock" | "cloud";
 
@@ -11,25 +12,53 @@ function Root({
   initialMission,
   initialMode,
   apiUrl,
+  apiToken,
   resumeId
 }: {
   initialMission?: string;
   initialMode: RunMode;
   apiUrl?: string;
+  apiToken?: string;
   resumeId?: string;
 }) {
   const [mission, setMission] = useState(initialMission ?? "");
-  const [mode, setMode] = useState<RunMode>(initialMode);
+  const [runtime, setRuntime] = useState<RuntimeProfile>({
+    mode: initialMode,
+    apiUrl: apiUrl ?? process.env.ORVIX_API_URL ?? "http://localhost:8787",
+    apiToken: apiToken ?? process.env.ORVIX_API_TOKEN
+  });
+  const [setupComplete, setSetupComplete] = useState(Boolean(initialMission || resumeId || process.env.ORVIX_SKIP_ONBOARDING));
 
   if (resumeId) {
-    return <App mission={mission || `Resuming ${resumeId}`} mode="cloud" apiUrl={apiUrl} resumeId={resumeId} />;
+    return <App mission={mission || `Resuming ${resumeId}`} mode="cloud" apiUrl={runtime.apiUrl} apiToken={runtime.apiToken} resumeId={resumeId} />;
   }
 
   if (mission) {
-    return <App mission={mission} mode={mode} apiUrl={apiUrl} />;
+    return <App mission={mission} mode={runtime.mode} apiUrl={runtime.apiUrl} apiToken={runtime.apiToken} />;
   }
 
-  return <LaunchPrompt mode={mode} onModeChange={setMode} apiUrl={apiUrl ?? "http://localhost:8787"} onSubmit={setMission} />;
+  if (!setupComplete) {
+    return (
+      <SetupWizard
+        defaultApiUrl={runtime.apiUrl}
+        defaultApiToken={runtime.apiToken}
+        onComplete={(profile) => {
+          setRuntime(profile);
+          setSetupComplete(true);
+        }}
+      />
+    );
+  }
+
+  return (
+    <LaunchPrompt
+      mode={runtime.mode}
+      onModeChange={(mode) => setRuntime((current) => ({ ...current, mode }))}
+      apiUrl={runtime.apiUrl}
+      apiToken={runtime.apiToken}
+      onSubmit={setMission}
+    />
+  );
 }
 
 // Alt-screen isolates our frame in its own buffer for the whole app
@@ -39,7 +68,7 @@ function Root({
 const enableAltScreen = "[?1049h";
 const disableAltScreen = "[?1049l";
 
-async function runMission(missionParts: string[] = [], options: { mode?: RunMode; apiUrl?: string; resume?: string } = {}) {
+async function runMission(missionParts: string[] = [], options: { mode?: RunMode; apiUrl?: string; apiToken?: string; resume?: string } = {}) {
   const mission = missionParts.join(" ").trim();
   process.stdout.write(enableAltScreen);
   const restore = () => process.stdout.write(disableAltScreen);
@@ -50,6 +79,7 @@ async function runMission(missionParts: string[] = [], options: { mode?: RunMode
         initialMission={mission || undefined}
         initialMode={options.mode ?? "mock"}
         apiUrl={options.apiUrl}
+        apiToken={options.apiToken}
         resumeId={options.resume}
       />
     );
@@ -72,10 +102,11 @@ program
   .description("Analyze a product mission and run the mock multi-agent delivery simulation")
   .option("--mode <mode>", "Run mode: mock or cloud", "mock")
   .option("--api-url <url>", "Orvix API URL for cloud mode", "http://localhost:8787")
+  .option("--api-token <token>", "Bearer token for a secured Orvix API")
   .option("--resume <missionId>", "Resume a mission from the API's disk snapshots (implies cloud mode)")
-  .action(async (request: string[] = [], options: { mode?: string; apiUrl?: string; resume?: string }) => {
+  .action(async (request: string[] = [], options: { mode?: string; apiUrl?: string; apiToken?: string; resume?: string }) => {
     const mode = options.mode === "cloud" ? "cloud" : "mock";
-    await runMission(request, { mode, apiUrl: options.apiUrl, resume: options.resume });
+    await runMission(request, { mode, apiUrl: options.apiUrl, apiToken: options.apiToken, resume: options.resume });
   });
 
 program.action(async () => {

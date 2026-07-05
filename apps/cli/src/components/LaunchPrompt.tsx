@@ -9,6 +9,7 @@ type LaunchPromptProps = {
   mode: RunMode;
   onModeChange: (mode: RunMode) => void;
   apiUrl: string;
+  apiToken?: string;
   onSubmit: (mission: string) => void;
 };
 
@@ -23,7 +24,7 @@ type ApiHealth =
   | { status: "unreachable" }
   | { status: "ready"; qwenConfigured: boolean; qwenModel: string };
 
-function useApiHealth(apiUrl: string, active: boolean) {
+function useApiHealth(apiUrl: string, apiToken: string | undefined, active: boolean) {
   const [health, setHealth] = useState<ApiHealth>({ status: "checking" });
 
   useEffect(() => {
@@ -32,7 +33,10 @@ function useApiHealth(apiUrl: string, active: boolean) {
     setHealth({ status: "checking" });
 
     const controller = new AbortController();
-    fetch(`${apiUrl}/health`, { signal: controller.signal })
+    fetch(`${apiUrl}/health`, {
+      signal: controller.signal,
+      headers: apiToken ? { Authorization: `Bearer ${apiToken}` } : undefined
+    })
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error(`status ${response.status}`))))
       .then((body: { qwen?: string; qwenModel?: string }) => {
         if (cancelled) return;
@@ -50,7 +54,7 @@ function useApiHealth(apiUrl: string, active: boolean) {
       cancelled = true;
       controller.abort();
     };
-  }, [apiUrl, active]);
+  }, [apiUrl, apiToken, active]);
 
   return health;
 }
@@ -63,6 +67,17 @@ function ModePill({ label, active, color }: { label: string; active: boolean; co
       </Text>
     </Box>
   );
+}
+
+function runtimeLabel(mode: RunMode, apiUrl: string) {
+  if (mode === "mock") {
+    return { label: "SCRIPTED DEMO", color: theme.warning };
+  }
+
+  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(apiUrl);
+  return isLocal
+    ? { label: "LOCAL RUNTIME", color: theme.local }
+    : { label: "ALIBABA CLOUD", color: theme.cloud };
 }
 
 function ModeStatusLine({ mode, health, apiUrl }: { mode: RunMode; health: ApiHealth; apiUrl: string }) {
@@ -89,11 +104,12 @@ function ModeStatusLine({ mode, health, apiUrl }: { mode: RunMode; health: ApiHe
   return <Text color={theme.success}>{glyphs.done} live — real Orvix agents on {health.qwenModel.split(",")[0]}</Text>;
 }
 
-export function LaunchPrompt({ mode, onModeChange, apiUrl, onSubmit }: LaunchPromptProps) {
+export function LaunchPrompt({ mode, onModeChange, apiUrl, apiToken, onSubmit }: LaunchPromptProps) {
   const { exit } = useApp();
   const [mission, setMission] = useState("");
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
-  const health = useApiHealth(apiUrl, mode === "cloud");
+  const health = useApiHealth(apiUrl, apiToken, mode === "cloud");
+  const runtime = runtimeLabel(mode, apiUrl);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -146,10 +162,7 @@ export function LaunchPrompt({ mode, onModeChange, apiUrl, onSubmit }: LaunchPro
       </Box>
 
       <Box justifyContent="center" marginTop={1}>
-        <Box marginRight={1}>
-          <ModePill label="MOCK DEMO" active={mode === "mock"} color={theme.warning} />
-        </Box>
-        <ModePill label="QWEN CLOUD" active={mode === "cloud"} color={theme.cloud} />
+        <ModePill label={runtime.label} active color={runtime.color} />
       </Box>
 
       <Box justifyContent="center" marginTop={1}>

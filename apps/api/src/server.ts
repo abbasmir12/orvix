@@ -1,3 +1,4 @@
+import { access, constants } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createQwenConfig, isQwenConfigured } from "@orvix/qwen";
 import type {
@@ -18,7 +19,7 @@ import { listRunsOnDisk, resumeRun } from "./resume.js";
 export function sendJson(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Content-Type": "application/json"
   });
@@ -48,12 +49,28 @@ export async function readJson<T>(request: IncomingMessage): Promise<T> {
   return raw ? JSON.parse(raw) as T : {} as T;
 }
 
+function isAuthorized(request: IncomingMessage) {
+  const expected = String(process.env.ORVIX_API_TOKEN ?? "").trim();
+  if (!expected) return true;
+  const header = request.headers.authorization ?? "";
+  return header === `Bearer ${expected}`;
+}
+
+async function canWriteWorkspaceRoot() {
+  try {
+    await access(process.cwd(), constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const server = createServer(async (request, response) => {
   try {
     if (request.method === "OPTIONS") {
       response.writeHead(204, {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS"
       });
       response.end();
@@ -61,6 +78,11 @@ export const server = createServer(async (request, response) => {
     }
 
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    const publicRoute = request.method === "GET" && url.pathname === "/health";
+    if (!publicRoute && !isAuthorized(request)) {
+      sendJson(response, 401, { error: "unauthorized", message: "Missing or invalid Orvix API bearer token." });
+      return;
+    }
 
     if (request.method === "GET" && url.pathname === "/health") {
       const qwenConfig = createQwenConfig();
@@ -72,6 +94,20 @@ export const server = createServer(async (request, response) => {
         qwen: isQwenConfigured(qwenConfig) ? "configured" : "missing_api_key",
         qwenBaseUrl: qwenConfig.baseUrl,
         qwenModel: qwenConfig.model
+      });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/runtime/check") {
+      const qwenConfig = createQwenConfig();
+      sendJson(response, 200, {
+        service: "orvix-api",
+        status: "ready",
+        auth: String(process.env.ORVIX_API_TOKEN ?? "").trim() ? "required" : "disabled",
+        qwen: isQwenConfigured(qwenConfig) ? "configured" : "missing_api_key",
+        qwenModel: qwenConfig.model,
+        node: process.version,
+        workspaceWritable: await canWriteWorkspaceRoot()
       });
       return;
     }
@@ -445,4 +481,3 @@ export const server = createServer(async (request, response) => {
 server.listen(port, () => {
   console.log(`orvix-api listening on http://localhost:${port}`);
 });
-

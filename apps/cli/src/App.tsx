@@ -5,6 +5,7 @@ import { PlanningConsole } from "./components/PlanningConsole.js";
 import {
   applySimulationStep,
   createInitialSimulation,
+  createMockReasoningArtifacts,
   nudgeActiveProgress,
   simulationSteps
 } from "./data/mockSimulation.js";
@@ -14,6 +15,7 @@ type AppProps = {
   mission: string;
   mode?: "mock" | "cloud";
   apiUrl?: string;
+  apiToken?: string;
   /** Resume this mission id from the API's disk snapshots instead of creating a new one. */
   resumeId?: string;
 };
@@ -39,6 +41,243 @@ const activityTabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "re
 const inspectorTabs: InspectorTab[] = ["overview", "trace", "files", "book", "review"];
 const enableSgrMouse = "\u001b[?1000h\u001b[?1002h\u001b[?1006h";
 const disableSgrMouse = "\u001b[?1000l\u001b[?1002l\u001b[?1006l";
+
+function mockAt(seconds: number) {
+  return new Date(Date.UTC(2026, 6, 5, 11, 0, seconds)).toISOString();
+}
+
+const mockPlanningTimeline: PlanningStageEvent[][] = [
+  [
+    { stage: "research", status: "started", detail: "Scanning CRM delivery patterns and agent split risks", at: mockAt(1) }
+  ],
+  [
+    { stage: "research", status: "completed", detail: "Research ready: CRM surfaces, auth boundary, review gates", elapsedMs: 1800, at: mockAt(3) },
+    { stage: "council", status: "completed", detail: "Planning council selected vertical product slices", elapsedMs: 2400, at: mockAt(5) },
+    { stage: "scaffold", status: "completed", detail: "Next.js-style CRM scaffold selected for demo evidence", elapsedMs: 1200, at: mockAt(6) }
+  ],
+  [
+    { stage: "analysis", status: "completed", detail: "MasterMind classified SaaS CRM as medium complexity", elapsedMs: 3100, at: mockAt(8) },
+    { stage: "orvix_map", status: "completed", detail: "Orvix Map locked: pages, file ownership, acceptance gates", elapsedMs: 4200, at: mockAt(10) },
+    { stage: "organization", status: "completed", detail: "Strategy Weaver created parallel implementation lanes", elapsedMs: 2900, at: mockAt(12) },
+    { stage: "rubric", status: "completed", detail: "Critic Council rubric rejects markdown-only PRs", elapsedMs: 1500, at: mockAt(13) }
+  ]
+];
+
+const mockTurnTimeline: AgentTurnEvent[][] = [
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "mastermind-agent",
+      agentName: "MasterMind Agent",
+      taskId: "mission-analysis",
+      branch: "main",
+      turn: 1,
+      at: mockAt(2),
+      kind: "note",
+      detail: "Parsed mission, opened Orvix Book, and summoned Strategy Weaver."
+    }
+  ],
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "architect-agent",
+      agentName: "Blueprint Architect",
+      taskId: "task-architecture-001",
+      branch: "blueprint/project-architecture",
+      turn: 1,
+      at: mockAt(8),
+      kind: "tool",
+      tool: "write_file",
+      path: "docs/orvix-map.json",
+      ok: true,
+      detail: "locked pages, components, file ownership, and acceptance gates"
+    },
+    {
+      missionId: "demo-recording",
+      agentId: "architect-agent",
+      agentName: "Blueprint Architect",
+      taskId: "task-architecture-001",
+      branch: "blueprint/project-architecture",
+      turn: 2,
+      at: mockAt(9),
+      kind: "tool",
+      tool: "open_pr",
+      path: "blueprint/project-architecture",
+      ok: true,
+      detail: "PR #1 Project architecture blueprint"
+    }
+  ],
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "frontend-manager",
+      agentName: "Interface Guild Lead",
+      taskId: "task-dashboard-001",
+      branch: "feat/dashboard",
+      turn: 1,
+      at: mockAt(13),
+      kind: "tool",
+      tool: "create_branch",
+      path: "feat/dashboard",
+      ok: true
+    },
+    {
+      missionId: "demo-recording",
+      agentId: "frontend-manager",
+      agentName: "Interface Guild Lead",
+      taskId: "task-dashboard-001",
+      branch: "feat/dashboard",
+      turn: 2,
+      at: mockAt(14),
+      kind: "tool",
+      tool: "write_file",
+      path: "app/dashboard/page.tsx",
+      ok: true,
+      detail: "42 additions"
+    },
+    {
+      missionId: "demo-recording",
+      agentId: "frontend-manager",
+      agentName: "Interface Guild Lead",
+      taskId: "task-dashboard-001",
+      branch: "feat/dashboard",
+      turn: 3,
+      at: mockAt(15),
+      kind: "tool",
+      tool: "post_book_entry",
+      path: "ui-contract",
+      ok: true,
+      detail: "shared contact row shape with Systems Guild"
+    }
+  ],
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "backend-manager",
+      agentName: "Systems Guild Lead",
+      taskId: "task-database-001",
+      branch: "feat/database-schema",
+      turn: 1,
+      at: mockAt(18),
+      kind: "tool",
+      tool: "write_file",
+      path: "db/schema.sql",
+      ok: true,
+      detail: "users, contacts, notes tables"
+    },
+    {
+      missionId: "demo-recording",
+      agentId: "backend-manager",
+      agentName: "Systems Guild Lead",
+      taskId: "task-auth-001",
+      branch: "feat/auth",
+      turn: 2,
+      at: mockAt(22),
+      kind: "tool",
+      tool: "open_pr",
+      path: "feat/auth",
+      ok: true,
+      detail: "PR #2 Authentication workflow"
+    }
+  ],
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "qa-reviewer-agent",
+      agentName: "Critic Council",
+      taskId: "review-pr-2",
+      branch: "feat/auth",
+      turn: 1,
+      at: mockAt(25),
+      kind: "harness",
+      tool: "review_pr",
+      path: "PR #2",
+      ok: false,
+      detail: "missing protected-route fallback"
+    }
+  ],
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "backend-manager",
+      agentName: "Systems Guild Lead",
+      taskId: "task-auth-001",
+      branch: "feat/auth",
+      turn: 3,
+      at: mockAt(28),
+      kind: "tool",
+      tool: "write_file",
+      path: "components/protected-route.tsx",
+      ok: true,
+      detail: "added auth-required fallback"
+    },
+    {
+      missionId: "demo-recording",
+      agentId: "backend-manager",
+      agentName: "Systems Guild Lead",
+      taskId: "task-auth-001",
+      branch: "feat/auth",
+      turn: 4,
+      at: mockAt(29),
+      kind: "tool",
+      tool: "commit_changes",
+      path: "feat/auth",
+      ok: true,
+      detail: "fix auth fallback review gate"
+    }
+  ],
+  [
+    {
+      missionId: "demo-recording",
+      agentId: "qa-reviewer-agent",
+      agentName: "Critic Council",
+      taskId: "review-pr-2",
+      branch: "feat/auth",
+      turn: 2,
+      at: mockAt(31),
+      kind: "harness",
+      tool: "review_pr",
+      path: "PR #2",
+      ok: true,
+      detail: "approved after source revision"
+    },
+    {
+      missionId: "demo-recording",
+      agentId: "release-agent",
+      agentName: "Release Marshal",
+      taskId: "release-report",
+      branch: "main",
+      turn: 1,
+      at: mockAt(34),
+      kind: "tool",
+      tool: "write_file",
+      path: "docs/final-report.md",
+      ok: true,
+      detail: "release verdict and submission evidence"
+    }
+  ]
+];
+
+const mockMetrics: RunMetricsSummary = {
+  missionId: "demo-recording",
+  mode: "mock",
+  isComplete: true,
+  wallClockMs: 94000,
+  qwenCalls: 37,
+  promptTokens: 184000,
+  completionTokens: 31000,
+  totalTokens: 215000,
+  totalQwenDurationMs: 72000,
+  callsByRole: { planner: 5, agent: 24, reviewer: 6, release: 2 },
+  tokensByRole: { planner: 52000, agent: 121000, reviewer: 31000, release: 11000 },
+  agents: 7,
+  tasks: 5,
+  tasksCompleted: 5,
+  pullRequests: 5,
+  pullRequestsApproved: 5,
+  filesWritten: 9,
+  reviewComments: 4
+};
 
 function terminalMouseWheelDelta(input: string) {
   let delta = 0;
@@ -66,7 +305,7 @@ function parseSseMessages(buffer: string): { messages: SseMessage[]; rest: strin
   return { messages, rest };
 }
 
-export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", resumeId }: AppProps) {
+export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", apiToken, resumeId }: AppProps) {
   const { exit } = useApp();
   const { stdin } = useStdin();
   const [missionTarget, setMissionTarget] = useState<MissionTarget>(
@@ -88,7 +327,9 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     book: 0
   });
   const [expandedPanel, setExpandedPanel] = useState<CockpitPanel | null>(null);
-  const [reasoningArtifacts, setReasoningArtifacts] = useState<ReasoningArtifact[]>([]);
+  const [reasoningArtifacts, setReasoningArtifacts] = useState<ReasoningArtifact[]>(
+    mode === "mock" ? createMockReasoningArtifacts(mission) : []
+  );
   const [inspectedAgentIndex, setInspectedAgentIndex] = useState<number | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("overview");
   const [inspectorScroll, setInspectorScroll] = useState<Record<InspectorTab, number>>({
@@ -101,9 +342,19 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
   const [showMenu, setShowMenu] = useState(false);
   const [missionId, setMissionId] = useState<string | null>(null);
   const [executionStatus, setExecutionStatus] = useState<string>("Workspace execution idle");
-  const [planningStages, setPlanningStages] = useState<PlanningStageEvent[]>([]);
-  const [agentTurns, setAgentTurns] = useState<AgentTurnEvent[]>([]);
-  const [metrics, setMetrics] = useState<RunMetricsSummary | null>(null);
+  const [planningStages, setPlanningStages] = useState<PlanningStageEvent[]>(
+    mode === "mock" ? mockPlanningTimeline[0] ?? [] : []
+  );
+  const [agentTurns, setAgentTurns] = useState<AgentTurnEvent[]>(
+    mode === "mock" ? mockTurnTimeline[0] ?? [] : []
+  );
+  const [metrics, setMetrics] = useState<RunMetricsSummary | null>(mode === "mock" ? mockMetrics : null);
+  const authHeaders = useMemo<Record<string, string>>(() => {
+    const headers: Record<string, string> = {};
+    if (apiToken) headers.Authorization = `Bearer ${apiToken}`;
+    return headers;
+  }, [apiToken]);
+  const jsonHeaders = useMemo<Record<string, string>>(() => ({ "Content-Type": "application/json", ...authHeaders }), [authHeaders]);
 
   async function runAgentExecution(kind: "next" | "selected" | "review" | "autopilot") {
     if (mode !== "cloud" || !missionId) {
@@ -132,7 +383,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       );
       const response = await fetch(`${apiUrl}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonHeaders,
         body: kind === "autopilot" ? JSON.stringify({ cycles: 300 }) : undefined
       });
 	      const result = await response.json() as {
@@ -187,7 +438,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       try {
         const response = await fetch(`${apiUrl}/missions/${missionId}/book`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonHeaders,
           body: JSON.stringify({
             type: "decision",
             fromAgentId: "mastermind-agent",
@@ -231,7 +482,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       }
       case "missions": {
         try {
-          const response = await fetch(`${apiUrl}/missions/disk`);
+          const response = await fetch(`${apiUrl}/missions/disk`, { headers: authHeaders });
           const payload = await response.json() as { runs?: Array<{ missionId: string; isComplete: boolean; mode: string }> };
           const listing = (payload.runs ?? []).slice(0, 5)
             .map((entry) => `${entry.missionId}${entry.isComplete ? " (done)" : ""}`)
@@ -535,9 +786,11 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     const stepTimer = setTimeout(
       () => {
         setState((current) => applySimulationStep(current, simulationSteps[stepIndex], stepIndex));
+        setPlanningStages((current) => [...current, ...(mockPlanningTimeline[stepIndex + 1] ?? [])]);
+        setAgentTurns((current) => [...current, ...(mockTurnTimeline[stepIndex + 1] ?? [])].slice(-300));
         setStepIndex((current) => current + 1);
       },
-      stepIndex === 0 ? 900 : 1600
+      stepIndex === 0 ? 1400 : stepIndex < 3 ? 2200 : 1800
     );
 
     return () => clearTimeout(stepTimer);
@@ -556,11 +809,12 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
         const createResponse = missionTarget.kind === "resume"
           ? await fetch(`${apiUrl}/missions/${missionTarget.missionId}/resume`, {
             method: "POST",
+            headers: authHeaders,
             signal: controller.signal
           })
           : await fetch(`${apiUrl}/missions`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: jsonHeaders,
             body: JSON.stringify({ mission: missionTarget.mission, mode: "qwen" }),
             signal: controller.signal
           });
@@ -573,12 +827,13 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
 
         const created = await createResponse.json() as { missionId: string; eventsUrl: string };
         setMissionId(created.missionId);
-        const stateResponse = await fetch(`${apiUrl}/missions/${created.missionId}`, { signal: controller.signal });
+        const stateResponse = await fetch(`${apiUrl}/missions/${created.missionId}`, { headers: authHeaders, signal: controller.signal });
         if (stateResponse.ok) {
           const snapshot = await stateResponse.json() as { state?: SimulationState };
           if (snapshot.state) setState(snapshot.state);
         }
         const reasoningResponse = await fetch(`${apiUrl}/missions/${created.missionId}/reasoning`, {
+          headers: authHeaders,
           signal: controller.signal
         });
         if (reasoningResponse.ok) {
@@ -587,6 +842,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
         }
 
         const eventsResponse = await fetch(`${apiUrl}${created.eventsUrl}`, {
+          headers: authHeaders,
           signal: controller.signal
         });
 
@@ -664,7 +920,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       cancelled = true;
       controller.abort();
     };
-  }, [apiUrl, missionTarget, mode]);
+  }, [apiUrl, authHeaders, jsonHeaders, missionTarget, mode]);
 
   useEffect(() => {
     if (mode !== "cloud" || !missionId) return;
@@ -674,7 +930,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
 
     async function pollMetrics() {
       try {
-        const response = await fetch(`${apiUrl}/missions/${missionId}/metrics`, { signal: controller.signal });
+        const response = await fetch(`${apiUrl}/missions/${missionId}/metrics`, { headers: authHeaders, signal: controller.signal });
         if (!response.ok || cancelled) return;
         setMetrics(await response.json() as RunMetricsSummary);
       } catch {
@@ -689,7 +945,7 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
       controller.abort();
       clearInterval(interval);
     };
-  }, [apiUrl, mode, missionId]);
+  }, [apiUrl, authHeaders, mode, missionId]);
 
   return (
     <Box flexDirection="column">

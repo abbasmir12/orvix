@@ -7,6 +7,9 @@ import type {
   AgentStatus,
   PullRequest,
   PullRequestStatus,
+  OrvixBookEntry,
+  AgentSignal,
+  ReasoningArtifact,
   SimulationState,
   Task,
   TimelineEvent
@@ -23,9 +26,190 @@ type SimulationStep = {
   calls?: Record<string, AgentCallPatch>;
   prs?: Record<number, PrPatch>;
   tasks?: Record<string, Partial<Pick<Task, "status">>>;
+  bookEntries?: OrvixBookEntry[];
+  signals?: AgentSignal[];
 };
 
 const padTime = (seconds: number) => `00:${seconds.toString().padStart(2, "0")}`;
+const demoTimestamp = (seconds: number) => new Date(Date.UTC(2026, 6, 5, 11, 0, seconds)).toISOString();
+
+function bookEntry(
+  id: string,
+  seconds: number,
+  input: Omit<OrvixBookEntry, "id" | "createdAt" | "status">
+): OrvixBookEntry {
+  return {
+    id,
+    createdAt: demoTimestamp(seconds),
+    status: input.type === "question" || input.type === "conflict" ? "open" : "final",
+    ...input
+  };
+}
+
+function signal(
+  id: string,
+  seconds: number,
+  input: Omit<AgentSignal, "id" | "createdAt" | "status">
+): AgentSignal {
+  return {
+    id,
+    createdAt: demoTimestamp(seconds),
+    status: "unread",
+    ...input
+  };
+}
+
+export function createMockReasoningArtifacts(mission: string): ReasoningArtifact[] {
+  return [
+    {
+      id: "mock-mission-analysis",
+      kind: "mission_analysis",
+      status: "completed",
+      createdAt: demoTimestamp(1),
+      content: `MasterMind classified "${mission}" as a multi-surface product mission. Required capabilities: auth boundary, dashboard shell, contact records, notes workflow, reviewable delivery evidence, and a deployable runtime surface.`,
+      reasoningContent: "The request is broad enough to need parallel ownership. MasterMind avoids one-agent serial work by splitting product slices and reserving Critic Council for merged evidence."
+    },
+    {
+      id: "mock-orvix-map",
+      kind: "orvix_map",
+      status: "completed",
+      createdAt: demoTimestamp(4),
+      artifactPath: "docs/orvix-map.json",
+      content: [
+        "Orvix Map locked:",
+        "- /login owns auth form, validation, protected-route fallback",
+        "- /dashboard owns metrics shell, recent activity, navigation",
+        "- /contacts owns table, detail panel, note composer",
+        "- shared files: app/layout.tsx, app/page.tsx, lib/storage.ts",
+        "- acceptance gates: no placeholder UI, build passes, PR evidence includes source files"
+      ].join("\n"),
+      reasoningContent: "The map uses vertical slices so UI and systems work can run together. Shared integration files are named explicitly to reduce merge conflict loops."
+    },
+    {
+      id: "mock-organization-design",
+      kind: "organization_design",
+      status: "completed",
+      createdAt: demoTimestamp(7),
+      content: "Strategy Weaver created MasterMind, Blueprint Architect, Interface Guild Lead, Systems Guild Lead, Critic Council, and Release Marshal. Implementation lanes run in parallel; Critic Council depends on PR evidence.",
+      reasoningContent: "QA and release are dependency-gated; feature agents are independent. This demonstrates the Agent Society track requirement: decomposition, dialogue, conflict handling, and efficiency gain."
+    },
+    {
+      id: "mock-agent-execution-dashboard",
+      kind: "agent_execution",
+      status: "completed",
+      createdAt: demoTimestamp(14),
+      content: JSON.stringify({
+        agent: { id: "frontend-manager", name: "Interface Guild Lead" },
+        task: { id: "task-dashboard-001", title: "Build dashboard shell plan", ownerAgentId: "frontend-manager" },
+        plan: {
+          summary: "Implement the visible CRM dashboard slice from the Orvix Map.",
+          agentMessages: [
+            "Using the Orvix Map as the source of truth for dashboard sections and selector names.",
+            "Publishing contact card data shape to Systems Guild through Orvix Book."
+          ],
+          transcript: [
+            { type: "observation", text: "Dashboard must show real CRM surfaces: metrics, contact activity, and notes preview.", beforeToolIndex: 0 },
+            { type: "tool_intent", tool: "write_file", path: "app/dashboard/page.tsx", text: "Writing the dashboard route with non-placeholder panels.", beforeToolIndex: 1 },
+            { type: "handoff", text: "Posted the contact row data contract for the backend lane.", beforeToolIndex: 2 }
+          ]
+        },
+        results: [
+          {
+            toolCall: { tool: "create_branch", branch: "feat/dashboard" },
+            result: { ok: true, branch: "feat/dashboard" }
+          },
+          {
+            toolCall: {
+              tool: "write_file",
+              path: "app/dashboard/page.tsx",
+              content: "export default function DashboardPage() {\n  return <main id=\"dashboard\"><section id=\"crm-metrics\">...</section></main>;\n}\n"
+            },
+            result: { ok: true, path: "app/dashboard/page.tsx", additions: 42, removals: 0 }
+          },
+          {
+            toolCall: {
+              tool: "write_file",
+              path: "components/dashboard-shell.tsx",
+              content: "export function DashboardShell() {\n  return <div className=\"crm-shell\">...</div>;\n}\n"
+            },
+            result: { ok: true, path: "components/dashboard-shell.tsx", additions: 58, removals: 0 }
+          },
+          {
+            toolCall: { tool: "open_pr", title: "Dashboard shell", branch: "feat/dashboard" },
+            result: { ok: true, prId: 3 }
+          }
+        ]
+      }),
+      reasoningContent: "The interface slice owns the visible CRM shell end-to-end. It should not wait for the storage implementation because the Orvix Map already locked the data shape."
+    },
+    {
+      id: "mock-agent-execution-auth",
+      kind: "agent_execution",
+      status: "completed",
+      createdAt: demoTimestamp(28),
+      content: JSON.stringify({
+        agent: { id: "backend-manager", name: "Systems Guild Lead" },
+        task: { id: "task-auth-001", title: "Implement authentication workflow plan", ownerAgentId: "backend-manager" },
+        plan: {
+          summary: "Implement auth/session boundary and revise after Critic Council rejection.",
+          agentMessages: [
+            "Schema is approved; auth can now write the session contract and protected route guard.",
+            "Reviewer requested explicit failure UX, so the revision adds a visible fallback state."
+          ],
+          transcript: [
+            { type: "observation", text: "Critic Council rejected PR #2 because protected routes had no fallback.", beforeToolIndex: 0 },
+            { type: "tool_intent", tool: "write_file", path: "lib/auth.ts", text: "Adding the session helpers and failure result.", beforeToolIndex: 1 },
+            { type: "tool_intent", tool: "write_file", path: "components/protected-route.tsx", text: "Adding the protected route fallback surface.", beforeToolIndex: 2 },
+            { type: "review_note", text: "Revision evidence is ready for re-review.", beforeToolIndex: 3 }
+          ]
+        },
+        results: [
+          {
+            toolCall: { tool: "checkout_branch", branch: "feat/auth" },
+            result: { ok: true, branch: "feat/auth" }
+          },
+          {
+            toolCall: {
+              tool: "write_file",
+              path: "lib/auth.ts",
+              content: "export function requireSession(session) {\n  return session ? { ok: true, session } : { ok: false, reason: 'missing-session' };\n}\n"
+            },
+            result: { ok: true, path: "lib/auth.ts", additions: 31, removals: 4 }
+          },
+          {
+            toolCall: {
+              tool: "write_file",
+              path: "components/protected-route.tsx",
+              content: "export function ProtectedRoute({ session, children }) {\n  if (!session) return <div id=\"auth-required\">Sign in to continue</div>;\n  return children;\n}\n"
+            },
+            result: { ok: true, path: "components/protected-route.tsx", additions: 36, removals: 0 }
+          },
+          {
+            toolCall: { tool: "commit_changes", message: "fix auth fallback review gate" },
+            result: { ok: true, output: "2 files changed, 67 insertions(+)" }
+          }
+        ]
+      }),
+      reasoningContent: "The revision loop demonstrates Orvix's quality bar: review feedback becomes a concrete code change, not a markdown apology."
+    },
+    {
+      id: "mock-pr-review",
+      kind: "pr_review",
+      status: "completed",
+      createdAt: demoTimestamp(23),
+      content: "Critic Council requested changes on PR #2 because protected-route fallback and auth error state were missing. The revision added explicit session failure handling and reviewer evidence.",
+      reasoningContent: "This is a useful demo moment: Orvix does not rubber-stamp work. The reviewer rejects incomplete implementation and routes a concrete repair."
+    },
+    {
+      id: "mock-final-report",
+      kind: "final_report",
+      status: "completed",
+      createdAt: demoTimestamp(34),
+      content: "Release Marshal recommends ship: architecture, auth workflow, dashboard shell, contacts API contract, and schema plan were approved. Remaining production work is deployment hardening and real database adapter.",
+      reasoningContent: "The recorded demo shows a full agency loop: plan, map, implement, review, revise, approve, and release."
+    }
+  ];
+}
 
 export function createInitialSimulation(mission: string): SimulationState {
   const analysis = analyzeMission(mission);
@@ -434,7 +618,28 @@ export const simulationSteps: SimulationStep[] = [
     },
     calls: {
       "call-strategy": { status: "calling", signal: "Summoned with mission brief" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-001", 2, {
+        type: "decision",
+        scope: "mission",
+        visibility: "global",
+        fromAgentId: "mastermind-agent",
+        toAgentIds: ["strategy-agent", "architect-agent"],
+        topics: ["mission-intent", "agent-society"],
+        priority: "high",
+        message: "MasterMind intent: build a reviewable SaaS CRM delivery run, not a mock page. Strategy must create parallel product slices and identify any true dependency gates."
+      })
+    ],
+    signals: [
+      signal("signal-001", 2, {
+        toAgentId: "strategy-agent",
+        fromAgentId: "mastermind-agent",
+        bookEntryId: "book-001",
+        type: "decision",
+        message: "Design the agent society around parallel product slices."
+      })
+    ]
   },
   {
     phase: "organizing",
@@ -446,7 +651,28 @@ export const simulationSteps: SimulationStep[] = [
     calls: {
       "call-strategy": { status: "returned", signal: "Org map accepted" },
       "call-architect": { status: "calling", signal: "Blueprint request dispatched" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-002", 5, {
+        type: "contract",
+        scope: "mission",
+        visibility: "global",
+        fromAgentId: "strategy-agent",
+        toAgentIds: ["architect-agent", "frontend-manager", "backend-manager", "qa-reviewer-agent"],
+        topics: ["dependency-graph", "parallelism"],
+        priority: "high",
+        message: "Strategy contract: Interface and Systems lanes may start after Orvix Map lock. Critic Council waits for PR evidence. Release Marshal waits for approved implementation PRs."
+      })
+    ],
+    signals: [
+      signal("signal-002", 5, {
+        toAgentId: "architect-agent",
+        fromAgentId: "strategy-agent",
+        bookEntryId: "book-002",
+        type: "contract_update",
+        message: "Create the Orvix Map with explicit file ownership and review gates."
+      })
+    ]
   },
   {
     phase: "executing",
@@ -470,7 +696,35 @@ export const simulationSteps: SimulationStep[] = [
       "task-architecture-001": { status: "completed" },
       "task-dashboard-001": { status: "active" },
       "task-database-001": { status: "active" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-003", 9, {
+        type: "contract",
+        scope: "mission",
+        visibility: "global",
+        fromAgentId: "architect-agent",
+        toAgentIds: ["frontend-manager", "backend-manager", "qa-reviewer-agent"],
+        topics: ["orvix-map", "file-ownership", "acceptance-gates"],
+        priority: "urgent",
+        message: "Orvix Map locked. UI owns app/dashboard and components. Systems owns lib/auth, lib/contacts, db/schema. Shared files require Book notice before editing. Reviewers reject markdown-only PRs."
+      })
+    ],
+    signals: [
+      signal("signal-003", 9, {
+        toAgentId: "frontend-manager",
+        fromAgentId: "architect-agent",
+        bookEntryId: "book-003",
+        type: "contract_update",
+        message: "Start dashboard shell using the locked Orvix Map."
+      }),
+      signal("signal-004", 9, {
+        toAgentId: "backend-manager",
+        fromAgentId: "architect-agent",
+        bookEntryId: "book-003",
+        type: "contract_update",
+        message: "Start schema/auth/API lane using the locked Orvix Map."
+      })
+    ]
   },
   {
     event: { message: "Interface Guild Lead called Dashboard Agent for workspace shell", severity: "info" },
@@ -479,7 +733,20 @@ export const simulationSteps: SimulationStep[] = [
     },
     calls: {
       "call-interface": { status: "running", signal: "Dashboard specialist active" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-004", 12, {
+        type: "handoff",
+        scope: "task",
+        visibility: "team",
+        fromAgentId: "frontend-manager",
+        toAgentIds: ["backend-manager"],
+        taskId: "task-dashboard-001",
+        topics: ["ui-contract", "data-shape"],
+        priority: "normal",
+        message: "Dashboard shell will consume contacts as { id, name, company, status, lastNoteAt }. Systems can stub storage with this shape until database adapter lands."
+      })
+    ]
   },
   {
     event: { message: "Systems Guild Lead blocked: schema approval required", severity: "warning" },
@@ -495,7 +762,28 @@ export const simulationSteps: SimulationStep[] = [
     tasks: {
       "task-auth-001": { status: "blocked" },
       "task-contacts-api-001": { status: "blocked" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-005", 15, {
+        type: "question",
+        scope: "team",
+        visibility: "mentioned",
+        fromAgentId: "backend-manager",
+        toAgentIds: ["mastermind-agent", "architect-agent"],
+        topics: ["schema", "blocking-dependency"],
+        priority: "high",
+        message: "Systems lane is blocked until schema ownership is approved. Should auth/API wait, or may I implement typed storage around the proposed contact/note model?"
+      })
+    ],
+    signals: [
+      signal("signal-005", 15, {
+        toAgentId: "mastermind-agent",
+        fromAgentId: "backend-manager",
+        bookEntryId: "book-005",
+        type: "mention",
+        message: "Systems lane needs a routing decision."
+      })
+    ]
   },
   {
     event: { message: "MasterMind Agent rerouted priority to Database Agent", severity: "info" },
@@ -505,7 +793,20 @@ export const simulationSteps: SimulationStep[] = [
     },
     calls: {
       "call-systems": { status: "running", signal: "Database Agent promoted" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-006", 18, {
+        type: "answer",
+        scope: "team",
+        visibility: "global",
+        fromAgentId: "mastermind-agent",
+        toAgentIds: ["backend-manager", "architect-agent"],
+        replyTo: "book-005",
+        topics: ["schema", "routing"],
+        priority: "high",
+        message: "Decision: promote schema PR first. Systems may continue auth/API only against the Orvix Map data contract. No hidden fallback or unrelated scaffold files."
+      })
+    ]
   },
   {
     event: { message: "Database Agent returned schema PR and unblocked systems lane", severity: "info" },
@@ -524,7 +825,20 @@ export const simulationSteps: SimulationStep[] = [
       "task-database-001": { status: "completed" },
       "task-auth-001": { status: "active" },
       "task-contacts-api-001": { status: "active" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-007", 20, {
+        type: "handoff",
+        scope: "pr",
+        visibility: "global",
+        fromAgentId: "backend-manager",
+        toAgentIds: ["frontend-manager", "qa-reviewer-agent"],
+        prId: 5,
+        topics: ["schema-approved", "unblock"],
+        priority: "normal",
+        message: "Schema PR approved. Contact + note entities are stable. Frontend can wire real empty states and detail panel against lib/storage.ts."
+      })
+    ]
   },
   {
     event: { message: "Auth Agent opened PR #2; MasterMind called Critic Council", severity: "info" },
@@ -534,7 +848,20 @@ export const simulationSteps: SimulationStep[] = [
     },
     calls: {
       "call-critic": { status: "calling", signal: "Review packet PR #2" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-008", 23, {
+        type: "review_note",
+        scope: "pr",
+        visibility: "global",
+        fromAgentId: "qa-reviewer-agent",
+        toAgentIds: ["backend-manager"],
+        prId: 2,
+        topics: ["review", "auth"],
+        priority: "high",
+        message: "Reviewing PR #2 against Orvix Map gate: login/signup visible, protected route fallback, no placeholder auth, and source-file evidence."
+      })
+    ]
   },
   {
     event: { message: "Critic Council rejected PR #2: missing protected-route fallback", severity: "warning" },
@@ -551,7 +878,29 @@ export const simulationSteps: SimulationStep[] = [
         reviewerStatus: "Requested changes",
         comments: ["Missing explicit auth error handling and protected route fallback."]
       }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-009", 26, {
+        type: "review_note",
+        scope: "pr",
+        visibility: "global",
+        fromAgentId: "qa-reviewer-agent",
+        toAgentIds: ["backend-manager", "mastermind-agent"],
+        prId: 2,
+        topics: ["changes-requested", "auth"],
+        priority: "urgent",
+        message: "Changes requested: PR #2 has form state, but protected-route failure is undefined. Add fallback UX and prove the route does not expose dashboard content without a session."
+      })
+    ],
+    signals: [
+      signal("signal-006", 26, {
+        toAgentId: "backend-manager",
+        fromAgentId: "qa-reviewer-agent",
+        bookEntryId: "book-009",
+        type: "review",
+        message: "PR #2 requires auth fallback revision."
+      })
+    ]
   },
   {
     event: { message: "Auth Agent patched review comments and resubmitted", severity: "success" },
@@ -568,7 +917,20 @@ export const simulationSteps: SimulationStep[] = [
         reviewerStatus: "Reviewing",
         comments: ["Auth error handling added. Protected route fallback documented."]
       }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-010", 29, {
+        type: "handoff",
+        scope: "pr",
+        visibility: "global",
+        fromAgentId: "backend-manager",
+        toAgentIds: ["qa-reviewer-agent"],
+        prId: 2,
+        topics: ["revision", "auth"],
+        priority: "high",
+        message: "Revision complete: added session guard, visible auth error state, and redirect fallback. Diff includes app/login/page.tsx, lib/auth.ts, and components/protected-route.tsx."
+      })
+    ]
   },
   {
     event: { message: "Critic Council approved PR #2 and returned release signal", severity: "success" },
@@ -594,7 +956,19 @@ export const simulationSteps: SimulationStep[] = [
       "task-auth-001": { status: "completed" },
       "task-dashboard-001": { status: "completed" },
       "task-contacts-api-001": { status: "completed" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-011", 32, {
+        type: "decision",
+        scope: "mission",
+        visibility: "global",
+        fromAgentId: "qa-reviewer-agent",
+        toAgentIds: ["mastermind-agent", "release-agent"],
+        topics: ["approval", "release"],
+        priority: "high",
+        message: "Critic Council approval: implementation PRs contain source/config changes, map gates are satisfied, and the remaining risks are documented for release."
+      })
+    ]
   },
   {
     phase: "final",
@@ -605,7 +979,19 @@ export const simulationSteps: SimulationStep[] = [
     },
     calls: {
       "call-release": { status: "returned", signal: "Delivery verdict complete" }
-    }
+    },
+    bookEntries: [
+      bookEntry("book-012", 35, {
+        type: "decision",
+        scope: "mission",
+        visibility: "global",
+        fromAgentId: "release-agent",
+        toAgentIds: ["mastermind-agent"],
+        topics: ["final-report", "ship"],
+        priority: "high",
+        message: "Release verdict: ship the recorded CRM build. Include architecture diagram, Alibaba Cloud runtime proof, Orvix Map, Book transcript, PR list, and demo video in submission."
+      })
+    ]
   }
 ];
 
@@ -653,7 +1039,9 @@ export function applySimulationStep(
     agentCalls: state.agentCalls.map(updateAgentCall),
     tasks: state.tasks.map(updateTask),
     pullRequests: state.pullRequests.map(updatePr),
-	    events: nextEvents.slice(-240),
+    events: nextEvents.slice(-240),
+    bookEntries: [...state.bookEntries, ...(step.bookEntries ?? [])].slice(-240),
+    agentSignals: [...state.agentSignals, ...(step.signals ?? [])].slice(-240),
     eventSequence,
     isComplete: step.phase === "final"
   };

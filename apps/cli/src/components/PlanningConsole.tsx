@@ -743,7 +743,7 @@ export function PlanningConsole({
         <Box width={railWidth} flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1}>
           <Text color={theme.accent} bold>Launch Rail</Text>
           <Box marginTop={1} flexDirection="column">
-            {mode === "cloud" && planningStages.length > 0
+            {planningStages.length > 0
               ? planningStageOrder.map((stage) => {
                 const event = latestStage(planningStages, stage);
                 const degraded = event?.status === "degraded" || event?.status === "failed";

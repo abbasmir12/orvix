@@ -11,6 +11,7 @@ export const theme = {
   // cloud-backed state, kept visually distinct from local/static chrome.
   cloud: "#7aa2f7",
   cloudDim: "#41537a",
+  local: "#7dd3fc",
 
   // Text hierarchy
   text: "#f4f4f4",
