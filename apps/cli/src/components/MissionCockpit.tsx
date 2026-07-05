@@ -1705,7 +1705,7 @@ export function MissionCockpit({
     return (
       <Box flexDirection="column">
         <TopStatus state={state} width={width} metrics={metrics} />
-        <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active width={width} />
+        <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active width={width} maxRows={Math.max(5, height - 14)} />
         <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
       </Box>
     );
