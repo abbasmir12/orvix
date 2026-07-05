@@ -512,8 +512,8 @@ function ScrollFeed({
       {Array.from({ length: rows }).map((_, index) => {
         const line = windowed.visible[index];
         return (
-          <Box key={line?.id ?? `empty-${index}`}>
-            <Box width={lineWidth}>{line?.node ?? <Text> </Text>}</Box>
+          <Box key={line?.id ?? `empty-${index}`} height={1} overflow="hidden">
+            <Box width={lineWidth} height={1} overflow="hidden">{line?.node ?? <Text> </Text>}</Box>
             {interactive ? (
               <Box width={1}>
                 <Text color={focused ? theme.accent : theme.faint}>{scrollbarGlyph(index, rows, windowed.total, windowed.start)}</Text>
@@ -645,235 +645,134 @@ export function PlanningConsole({
       ? Math.round((completedStages / planningStageOrder.length) * 100)
       : Math.min(96, reasoningArtifacts.length * 22 + planningEvents.length * 8 + (latestEvent ? 8 : 0))
     : 18;
-  const missionPanelWidth = Math.floor(width * 0.38);
-  const orgPanelWidth = Math.floor(width * 0.34);
-  const railWidth = width - missionPanelWidth - orgPanelWidth;
-  const innerMissionWidth = Math.max(24, missionPanelWidth - 4);
-  const innerRailWidth = Math.max(20, railWidth - 4);
-  const innerOrgWidth = Math.max(24, orgPanelWidth - 4);
-  // The mission panel shares row space with the feeds: cap its lists so the
-  // left column never grows taller than the adaptive feed boxes beside it.
-  const featureList = stringArray(missionAnalysis?.features ?? state.analysis.features).slice(0, Math.max(2, Math.min(5, FEED_ROWS - 4)));
-  const riskList = stringArray(missionAnalysis?.risks ?? state.analysis.risks).slice(0, compact ? 2 : 3);
-  const visibleTasks = state.tasks.slice(0, Math.max(3, Math.min(6, FEED_ROWS - 3)));
-  const leftWidth = Math.floor(width * 0.52);
-  const rightWidth = width - leftWidth;
+  // Railed layout geometry — the same identity column as the mission
+  // cockpit: brand + mission + tree-connected planning state on the left,
+  // working panels beside it, everything height-budgeted to the terminal.
+  const railWidth = 21;
+  const mainWidth = width - railWidth;
+  const briefWidth = Math.floor(mainWidth * 0.42);
+  const forgeWidth = mainWidth - briefWidth;
+  const bookWidth = Math.floor(mainWidth * 0.5);
+  const traceWidth = mainWidth - bookWidth;
+  const innerMissionWidth = Math.max(20, briefWidth - 4);
 
-  const broadcasts = broadcastLines(broadcastEntries(state, reasoningArtifacts), innerOrgWidth);
-  const bookFeed = bookLines(bookAndResearchLines(state, reasoningArtifacts), Math.max(24, leftWidth - 5));
-  const traceFeed = traceLines(traceEntries(reasoningArtifacts), Math.max(24, rightWidth - 5));
+  const featureList = stringArray(missionAnalysis?.features ?? state.analysis.features).slice(0, 4);
+  const riskList = stringArray(missionAnalysis?.risks ?? state.analysis.risks).slice(0, 2);
+
+  const broadcasts = broadcastLines(broadcastEntries(state, reasoningArtifacts), Math.max(24, forgeWidth - 5));
+  const bookFeed = bookLines(bookAndResearchLines(state, reasoningArtifacts), Math.max(24, bookWidth - 5));
+  const traceFeed = traceLines(traceEntries(reasoningArtifacts), Math.max(24, traceWidth - 5));
   const promptText = promptPreviewText(featuredAgent);
   const traceAndPrompt: Line[] = [
     ...traceFeed,
-    { id: "prompt-divider", node: <Text color={theme.faint}>{"─".repeat(Math.max(10, rightWidth - 6))}</Text> },
+    { id: "prompt-divider", node: <Text color={theme.faint}>{"─".repeat(Math.max(10, traceWidth - 6))}</Text> },
     { id: "prompt-title", node: <Text color={theme.accent} bold>{glyphs.dot} Sample agent system prompt</Text> },
-    ...wrappedLines("prompt-body", promptText, Math.max(24, rightWidth - 5), theme.muted),
-    { id: "signal-divider", node: <Text color={theme.faint}>{"─".repeat(Math.max(10, rightWidth - 6))}</Text> },
-    ...labeledWrappedLines("latest-signal", "Latest: ", latestEvent?.message ?? "No planner signal yet.", Math.max(24, rightWidth - 5), theme.muted, theme.text)
+    ...wrappedLines("prompt-body", promptText, Math.max(24, traceWidth - 5), theme.muted),
+    { id: "signal-divider", node: <Text color={theme.faint}>{"─".repeat(Math.max(10, traceWidth - 6))}</Text> },
+    ...labeledWrappedLines("latest-signal", "Latest: ", latestEvent?.message ?? "No planner signal yet.", Math.max(24, traceWidth - 5), theme.muted, theme.text)
   ];
 
-  // Header + row heights are computed here (not just guessed at render time)
-  // so the hover hit-test regions below stay exactly in sync with what's
-  // actually drawn — alt-screen mode (enabled once at app start) guarantees
-  // mouse (x, y) are absolute coordinates matching this same numbering.
-  const headerContentLines = mode === "cloud" ? 2 : 1;
-  const headerHeight = headerContentLines + 2;
-  const row1Y0 = headerHeight + 2;
-  const row1BoxRows = FEED_ROWS + 2;
-  const row1Height = row1BoxRows + 4;
-  const row1Y1 = row1Y0 + row1Height - 1;
-  const row2Y0 = row1Y1 + 2;
-  const row2BoxRows = FEED_ROWS + 2;
-  const row2Height = row2BoxRows + 4;
-  const row2Y1 = row2Y0 + row2Height - 1;
+  // Row heights solved from the real terminal height (ink bottom-anchors, so
+  // overflow clips the TOP): brief/forge row is fixed at 10 rows and drops
+  // entirely below 24 rows; the two feeds absorb the remainder.
+  const showRow1 = termRows >= 24;
+  const forgeRows = 4;
+  const row1Height = showRow1 ? forgeRows + 6 : 0;
+  const feedRows = Math.max(3, Math.min(18, termRows - row1Height - 10));
 
   regionsRef.current = {
-    broadcast: { x0: missionPanelWidth + 1, y0: row1Y0, x1: missionPanelWidth + orgPanelWidth, y1: row1Y1 },
-    book: { x0: 1, y0: row2Y0, x1: leftWidth, y1: row2Y1 },
-    trace: { x0: leftWidth + 1, y0: row2Y0, x1: width, y1: row2Y1 }
+    broadcast: showRow1 ? { x0: railWidth + briefWidth + 1, y0: 1, x1: width, y1: row1Height } : undefined,
+    book: { x0: railWidth + 1, y0: row1Height + 1, x1: railWidth + bookWidth, y1: row1Height + feedRows + 6 },
+    trace: { x0: railWidth + bookWidth + 1, y0: row1Height + 1, x1: width, y1: row1Height + feedRows + 6 }
   };
 
-  // Compact "planning ticker" for short terminals (laptops, SSH panes):
-  // the rich three-panel layout cannot fit, and ink anchors to the bottom —
-  // so instead of clipping the top, collapse to a one-column view: header,
-  // stage strip, live feed, latest signal. Everything essential, zero clip.
-  if (termRows < 32) {
-    const stageShortLabels: Record<PlanningStageId, string> = {
-      research: "Research",
-      council: "Council",
-      scaffold: "Scaffold",
-      analysis: "Analysis",
-      orvix_map: "Map",
-      organization: "Org",
-      rubric: "Rubric"
-    };
-    const compactFeedRows = Math.max(4, Math.min(12, termRows - 13));
-    const compactFeed = bookLines(bookAndResearchLines(state, reasoningArtifacts), Math.max(24, width - 7));
-
-    return (
-      <Box flexDirection="column" width={width}>
-        <Box borderStyle="round" borderColor={theme.accentDim} paddingX={1} justifyContent="space-between">
-          <Box>
-            <Text color={theme.accentBright} bold>{glyphs.ring} ORVIX</Text>
-            <Text color={theme.faint}>  planning  </Text>
-            <Text color={theme.text}>{fit(state.analysis.id, 16)}</Text>
-          </Box>
-          <Text>
-            <Text color={theme.muted}>{progressBar(progress, 10)} </Text>
-            <Text color={theme.accentBright} bold>{progress}%</Text>
-          </Text>
-        </Box>
-        <Box paddingX={1}>
-          <Text>
-            {planningStageOrder.map((stage) => {
-              const status = latestStage(planningStages, stage)?.status;
-              const color = status === "completed" ? theme.success
-                : status === "degraded" || status === "failed" ? theme.warning
-                  : status === "started" ? theme.cloud : theme.faint;
-              const glyph = status === "completed" ? glyphs.done
-                : status === "degraded" || status === "failed" ? glyphs.degraded
-                  : status === "started" ? glyphs.active : glyphs.queued;
-              return (
-                <Text key={stage}>
-                  <Text color={color}>{glyph} {stageShortLabels[stage]}</Text>
-                  <Text color={theme.faint}>{stage === "rubric" ? "" : "  "}</Text>
-                </Text>
-              );
-            })}
-          </Text>
-        </Box>
-        <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={0}>
-          <ScrollFeed lines={compactFeed} rows={compactFeedRows} scrollOffset={scroll.book} width={Math.max(24, width - 6)} focused interactive />
-        </Box>
-        <Box paddingX={1}>
-          <Text color={theme.muted}>{fit(`${glyphs.arrow} ${latestEvent?.message ?? "Waiting for planner signal…"}`, Math.max(24, width - 4))}</Text>
-        </Box>
-        <Box paddingX={1}>
-          <Text color={theme.faint}>↑/↓ scroll · Ctrl+C exit · widen the terminal for the full planning console</Text>
-        </Box>
-      </Box>
-    );
-  }
+  const railInner = railWidth - 2;
+  const stageShortLabels: Record<PlanningStageId, string> = {
+    research: "Research",
+    council: "Council",
+    scaffold: "Scaffold",
+    analysis: "Analysis",
+    orvix_map: "Orvix Map",
+    organization: "Org design",
+    rubric: "Rubric"
+  };
 
   return (
-    <Box flexDirection="column" width={width}>
-      <Box borderStyle="round" borderColor={theme.accent} paddingX={1} justifyContent="space-between">
-        <Box>
-          <Text color={theme.accent} bold>{glyphs.ring} ORVIX</Text>
-          <Text color={theme.muted}>  planning console  </Text>
-          <Text color={theme.text}>{fit(state.analysis.id, 16)}</Text>
-        </Box>
-        <Text color={mode === "cloud" ? theme.cloud : theme.warning} bold>
-          {fit(mode === "cloud" ? `${glyphs.done} Qwen Cloud` : `${glyphs.degraded} Mock demo`, 16)}
+    <Box width={width}>
+      <Box width={railWidth} flexDirection="column" paddingX={1}>
+        <Text color={theme.accentBright} bold>█▀█ █▀█ █░█ █ ▀▄▀</Text>
+        <Text color={theme.accentBright} bold>█▄█ █▀▄ ░▀░ █ █░█</Text>
+        <Text color={theme.faint}>╾{"─".repeat(Math.max(4, railInner - 2))}╼</Text>
+        <Text color={theme.muted} bold>mission</Text>
+        <Text>
+          <Text color={theme.faint}>└╴</Text>
+          <Text color={theme.text}>{fit(mission.replace(/\s+/g, " "), railInner - 2)}</Text>
+        </Text>
+        <Text color={theme.faint}>  {fit(state.analysis.id.replace(/^mission_/, "m_"), railInner - 2)}</Text>
+        <Text> </Text>
+        <Text color={theme.muted} bold>planning</Text>
+        <Text>
+          <Text color={theme.faint}>└╴</Text>
+          <Text color={theme.muted}>{progressBar(progress, Math.max(6, railInner - 8))} </Text>
+          <Text color={theme.accentBright} bold>{progress}%</Text>
+        </Text>
+        <Text> </Text>
+        <Text color={theme.muted} bold>stages</Text>
+        {planningStageOrder.map((stage, index) => {
+          const event = latestStage(planningStages, stage);
+          const timing = event?.status === "completed" ? formatElapsed(event.elapsedMs) : event?.status === "started" ? "…" : "";
+          return (
+            <Text key={stage}>
+              <Text color={theme.faint}>{index === planningStageOrder.length - 1 ? "└╴" : "├╴"}</Text>
+              <Text color={stageGlyphColor(event?.status)}>{stageGlyph(event?.status)} </Text>
+              <Text color={event?.status === "completed" ? theme.text : theme.muted}>{fit(stageShortLabels[stage], railInner - 10)}</Text>
+              <Text color={theme.faint}>{timing}</Text>
+            </Text>
+          );
+        })}
+        <Text> </Text>
+        <Text color={theme.muted} bold>runtime</Text>
+        <Text>
+          <Text color={theme.faint}>└╴</Text>
+          <Text color={mode === "cloud" ? theme.cloud : theme.warning} bold>{mode === "cloud" ? "Qwen Cloud" : "Mock demo"}</Text>
         </Text>
       </Box>
-      {mode === "cloud" ? (
-        <Box paddingX={1}>
-          <Text color={theme.faint}>{fit(apiUrl, width - 4)}</Text>
-        </Box>
-      ) : null}
 
-      <Box width={width} marginTop={1}>
-        <Box width={missionPanelWidth} flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1} paddingY={1}>
-          <Text color={theme.accent} bold>MasterMind Brief</Text>
-          <Box marginTop={1}>
-            <Text color={theme.muted}>{progressBar(progress, 16)} </Text>
-            <Text>{progress}%</Text>
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Request</Text>
-            <WrappedText value={mission} width={innerMissionWidth} />
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Classification</Text>
-            <Text>{fit(`${String(missionAnalysis?.projectType ?? state.analysis.projectType)} · ${String(missionAnalysis?.complexity ?? state.analysis.complexity)}`, innerMissionWidth)}</Text>
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text color={theme.muted}>Features</Text>
-            {featureList.map((feature, index) => (
-              <Text key={`feature-${index}`} color={theme.success}>{glyphs.done} {fit(feature, Math.max(12, innerMissionWidth - 2))}</Text>
-            ))}
-          </Box>
-          {!compact ? (
-            <Box marginTop={1} flexDirection="column">
-              <Text color={theme.muted}>Risks MasterMind is watching</Text>
+      <Box width={mainWidth} flexDirection="column">
+        {showRow1 ? (
+          <Box width={mainWidth}>
+            <Box width={briefWidth} flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1}>
+              <Text color={theme.accent} bold>MasterMind Brief</Text>
+              <Text>{fit(`${String(missionAnalysis?.projectType ?? state.analysis.projectType)} · ${String(missionAnalysis?.complexity ?? state.analysis.complexity)}`, innerMissionWidth)}</Text>
+              {featureList.map((feature, index) => (
+                <Text key={`feature-${index}`} color={theme.success}>{glyphs.done} {fit(feature, Math.max(12, innerMissionWidth - 2))}</Text>
+              ))}
               {riskList.map((risk, index) => (
-                <WrappedText key={`risk-${index}`} value={`${glyphs.degraded} ${risk}`} width={innerMissionWidth} color={theme.warning} />
+                <Text key={`risk-${index}`} color={theme.warning}>{glyphs.degraded} {fit(risk, Math.max(12, innerMissionWidth - 2))}</Text>
               ))}
             </Box>
-          ) : null}
-        </Box>
-
-        <PanelFrame title={panelTitles.broadcast} width={orgPanelWidth} focused={focus === "broadcast"} hint={`${broadcasts.length} live`}>
-          <ScrollFeed lines={broadcasts} rows={row1BoxRows} scrollOffset={scroll.broadcast} width={innerOrgWidth} focused={focus === "broadcast"} interactive />
-        </PanelFrame>
-
-        <Box width={railWidth} flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1} paddingY={1}>
-          <Text color={theme.accent} bold>Launch Rail</Text>
-          <Box marginTop={1} flexDirection="column">
-            {planningStages.length > 0
-              ? planningStageOrder.map((stage) => {
-                const event = latestStage(planningStages, stage);
-                const degraded = event?.status === "degraded" || event?.status === "failed";
-                const detailText = degraded
-                  ? `degraded: ${event?.detail ?? "unknown reason"}`
-                  : event?.status === "started"
-                    ? "running…"
-                    : event?.status === "completed"
-                      ? formatElapsed(event.elapsedMs) || "done"
-                      : "waiting";
-                return (
-                  <Box key={stage} flexDirection="column" marginBottom={1}>
-                    <Text>
-                      <Text color={stageGlyphColor(event?.status)}>{stageGlyph(event?.status)} </Text>
-                      <Text>{fit(planningStageLabels[stage], innerRailWidth)}</Text>
-                    </Text>
-                    <Text color={degraded ? theme.warning : theme.muted}>  {fit(detailText, innerRailWidth)}</Text>
-                  </Box>
-                );
-              })
-              : artifactOrder.map((kind, index) => {
-                const status = artifactStatus(kind, reasoningArtifacts);
-                return (
-                  <Box key={kind} flexDirection="column" marginBottom={1}>
-                    <Text>
-                      <Text color={statusColor(status)}>{statusGlyph(status)} </Text>
-                      <Text>{fit(artifactLabels[kind], innerRailWidth)}</Text>
-                    </Text>
-                    <Text color={theme.muted}>  {fit(handoffLabel(index), innerRailWidth)}</Text>
-                  </Box>
-                );
-              })}
+            <Box width={forgeWidth} flexDirection="column" borderStyle="round" borderColor={focus === "broadcast" ? theme.accent : theme.border} paddingX={1}>
+              <Box justifyContent="space-between">
+                <Text color={focus === "broadcast" ? theme.accent : theme.muted} bold>Organization Forge</Text>
+                <Text color={theme.faint}>{broadcasts.length} live</Text>
+              </Box>
+              <ScrollFeed lines={broadcasts} rows={forgeRows + 3} scrollOffset={scroll.broadcast} width={Math.max(24, forgeWidth - 5)} focused={focus === "broadcast"} interactive />
+            </Box>
           </Box>
-          {!compact ? (
-            <Box marginTop={1} flexDirection="column">
-              <Text color={theme.muted}>Task graph preview</Text>
-              {visibleTasks.map((task, index) => (
-                <Text key={task.id}>{fit(`${index + 1}. ${task.ownerAgentId} -> ${task.branch}`, innerRailWidth)}</Text>
-              ))}
-            </Box>
-          ) : null}
+        ) : null}
+
+        <Box width={mainWidth}>
+          <PanelFrame title={panelTitles.book} width={bookWidth} focused={focus === "book"} hint={String(bootstrap ? bootstrap.label ?? bootstrap.type ?? "scaffold set" : "scaffold pending")}>
+            <ScrollFeed lines={bookFeed} rows={feedRows} scrollOffset={scroll.book} width={Math.max(24, bookWidth - 5)} focused={focus === "book"} interactive />
+          </PanelFrame>
+          <PanelFrame title={panelTitles.trace} width={traceWidth} focused={focus === "trace"} hint={`${reasoningArtifacts.length} artifacts`}>
+            <ScrollFeed lines={traceAndPrompt} rows={feedRows} scrollOffset={scroll.trace} width={Math.max(24, traceWidth - 5)} focused={focus === "trace"} interactive />
+          </PanelFrame>
         </Box>
-      </Box>
 
-      <Box width={width} marginTop={1}>
-        <PanelFrame title={panelTitles.book} width={leftWidth} focused={focus === "book"} hint={String(bootstrap ? bootstrap.label ?? bootstrap.type ?? "scaffold set" : "scaffold pending")}>
-          <ScrollFeed lines={bookFeed} rows={row2BoxRows} scrollOffset={scroll.book} width={Math.max(24, leftWidth - 5)} focused={focus === "book"} interactive />
-        </PanelFrame>
-
-        <PanelFrame title={panelTitles.trace} width={rightWidth} focused={focus === "trace"} hint={`${reasoningArtifacts.length} artifacts`}>
-          <ScrollFeed lines={traceAndPrompt} rows={row2BoxRows} scrollOffset={scroll.trace} width={Math.max(24, rightWidth - 5)} focused={focus === "trace"} interactive />
-        </PanelFrame>
-      </Box>
-
-      <Box borderStyle="round" borderColor={theme.border} paddingX={1} marginTop={1}>
-        <Text color={theme.accent}>{glyphs.chevron} </Text>
-        <Text color={theme.muted}>
-          {fit(
-            `Tab focus panel · hover + wheel or ↑/↓ scroll · PageUp/PageDown jump · focused: ${panelTitles[focus]} · q quit`,
-            Math.max(20, width - 6)
-          )}
-        </Text>
+        <Box paddingX={1}>
+          <Text color={theme.faint}>{fit(`tab focus · ↑/↓ scroll · PageUp/Dn jump · focused: ${panelTitles[focus]} · q quit`, Math.max(20, mainWidth - 2))}</Text>
+        </Box>
       </Box>
     </Box>
   );
