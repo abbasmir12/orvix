@@ -76,24 +76,36 @@ export function resumeRun(missionId: string): { ok: true; run: MissionRun; resum
     return { ok: true, run, resumed: true };
   }
 
-  // Re-queue phantom in-flight work from the crashed process.
+  // Re-queue work the previous process left in unrecoverable states: PRs
+  // "In progress" without execution evidence (session died mid-flight) and
+  // tasks/agents stuck "blocked" or "active" by failed sessions. A blocked
+  // status only means something while the process that set it is alive —
+  // legitimate review blocks re-assert themselves through PR statuses.
   const executedBranches = getExecutedBranches(run);
   const phantomBranches = new Set(
     run.state.pullRequests
       .filter((pr) => pr.status === "In progress" && !executedBranches.has(pr.branch))
       .map((pr) => pr.branch)
   );
-  if (phantomBranches.size > 0) {
+  const approvedBranches = new Set(run.state.pullRequests.filter((pr) => pr.status === "Approved").map((pr) => pr.branch));
+  const staleTask = (task: SimulationState["tasks"][number]) =>
+    (phantomBranches.has(task.branch) || task.status === "blocked" || task.status === "active") &&
+    task.status !== "completed" &&
+    !approvedBranches.has(task.branch);
+  const staleCount = run.state.tasks.filter(staleTask).length;
+  if (staleCount > 0 || phantomBranches.size > 0) {
+    const staleOwners = new Set(run.state.tasks.filter(staleTask).map((task) => task.ownerAgentId));
     run.state = {
       ...run.state,
       pullRequests: run.state.pullRequests.map((pr) => phantomBranches.has(pr.branch)
         ? { ...pr, status: "Queued" as const, reviewerStatus: "Pending" as const }
         : pr),
-      tasks: run.state.tasks.map((task) => phantomBranches.has(task.branch) && task.status !== "completed"
-        ? { ...task, status: "queued" }
-        : task)
+      tasks: run.state.tasks.map((task) => staleTask(task) ? { ...task, status: "queued" } : task),
+      agents: run.state.agents.map((agent) => staleOwners.has(agent.id) && agent.status !== "completed"
+        ? { ...agent, status: "queued", currentActivity: "Re-queued after resume" }
+        : agent)
     };
-    appendEvent(run, `Resume re-queued ${phantomBranches.size} interrupted workstream${phantomBranches.size === 1 ? "" : "s"} from the previous process`, "info");
+    appendEvent(run, `Resume re-queued ${staleCount} interrupted workstream${staleCount === 1 ? "" : "s"} from the previous process`, "info");
   }
 
   run.qwenPlanningComplete = usesQwenReasoning(run);

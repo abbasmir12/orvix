@@ -518,10 +518,28 @@ function parseModelChain(raw: string): string[] {
   return Array.from(new Set(models.length > 0 ? models : ["qwen-plus"]));
 }
 
-// Models found to have exhausted their free-tier quota this process lifetime.
-// Shared across all QwenClient instances/roles so one exhausted model isn't
-// retried elsewhere in the chain once another role has already learned it's dead.
-const exhaustedModels = new Set<string>();
+// Models that recently failed hard (quota 429/403 or request-shape 400).
+// Shared across all QwenClient instances/roles, but entries EXPIRE: a
+// per-minute throttle looks identical to daily exhaustion in the response,
+// and benching a model forever shrinks the chain until nothing is left.
+// After the TTL the model rejoins; if it is truly drained, one cheap failed
+// call re-benches it for another window.
+const EXHAUSTED_TTL_MS = Number(process.env.QWEN_MODEL_BENCH_MS ?? 5 * 60 * 1000);
+const exhaustedModels = new Map<string, number>();
+
+function benchModel(model: string) {
+  exhaustedModels.set(model, Date.now() + EXHAUSTED_TTL_MS);
+}
+
+function isModelBenched(model: string) {
+  const until = exhaustedModels.get(model);
+  if (until === undefined) return false;
+  if (Date.now() >= until) {
+    exhaustedModels.delete(model);
+    return false;
+  }
+  return true;
+}
 
 function isQuotaExhaustedError(status: number, body: string) {
   if (status !== 403 && status !== 429) return false;
@@ -531,7 +549,7 @@ function isQuotaExhaustedError(status: number, body: string) {
 function firstAvailableModelIndex(chain: string[], startIndex = 0) {
   for (let offset = 0; offset < chain.length; offset += 1) {
     const index = (startIndex + offset) % chain.length;
-    if (!exhaustedModels.has(chain[index])) return index;
+    if (!isModelBenched(chain[index])) return index;
   }
   return -1;
 }
@@ -598,15 +616,33 @@ export type QwenChatOptions = {
 
 const maxRequestAttempts = 3;
 
+/** Stable non-negative hash for spreading agents across the model chain. */
+export function stableChainOffset(seed: string) {
+  let hash = 0;
+  for (const char of seed) {
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  }
+  return hash;
+}
+
 export class QwenClient {
-  constructor(private readonly config = createQwenConfig()) {}
+  /**
+   * `chainSeed` rotates this client's model chain by a stable hash so
+   * different agents start on different models — N parallel agents drain N
+   * quota buckets instead of stampeding the first model in the chain. Every
+   * client still falls back through the full chain on failures.
+   */
+  constructor(private readonly config = createQwenConfig(), private readonly chainSeed?: string) {}
 
   /** Ordered model fallback chain for a role. A single model (no comma) behaves exactly as before. */
   private modelChainForRole(role: QwenRole = "planner") {
     const raw = role === "agent" ? this.config.agentModel ?? this.config.model
       : role === "review" ? this.config.reviewModel ?? this.config.model
         : this.config.plannerModel ?? this.config.model;
-    return parseModelChain(raw);
+    const chain = parseModelChain(raw);
+    if (!this.chainSeed || chain.length < 2 || process.env.QWEN_SPREAD_AGENTS === "false") return chain;
+    const offset = stableChainOffset(this.chainSeed) % chain.length;
+    return [...chain.slice(offset), ...chain.slice(0, offset)];
   }
 
   async chatDetailed(messages: ChatMessage[], options: QwenChatOptions = {}): Promise<QwenChatResult> {
@@ -623,6 +659,10 @@ export class QwenClient {
     // response_format and tools are mutually exclusive on DashScope; native
     // tool sessions rely on tool_calls, not JSON bodies.
     let useJsonFormat = options.json === true && !options.nativeTools?.length;
+    // Some chain models (flash/plus/max snapshots) reject tool_choice:
+    // "required" with a 400 even though tools themselves work fine — degrade
+    // to "auto" per call instead of losing the model entirely.
+    let requireTool = options.requireNativeTool === true;
 
     // Transient (429/5xx/network) retries and model-chain switches on quota
     // exhaustion share one bounded loop so a multi-model chain gets a fair
@@ -638,7 +678,7 @@ export class QwenClient {
       };
       if (options.nativeTools?.length) {
         requestBody.tools = createAgentToolDefinitions(options.nativeTools);
-        requestBody.tool_choice = options.requireNativeTool ? "required" : "auto";
+        requestBody.tool_choice = requireTool ? "required" : "auto";
       }
       if (useJsonFormat) {
         requestBody.response_format = { type: "json_object" };
@@ -697,7 +737,7 @@ export class QwenClient {
       if (!response.ok) {
         const body = await response.text();
         if (isQuotaExhaustedError(response.status, body) && modelChain.length > 1) {
-          exhaustedModels.add(model);
+          benchModel(model);
           const next = firstAvailableModelIndex(modelChain, modelIndex + 1);
           if (next !== -1) {
             console.warn(`[qwen] ${model} quota exhausted; switching to ${modelChain[next]} for role "${role}"`);
@@ -707,15 +747,20 @@ export class QwenClient {
           // Every model in the chain is marked exhausted; give the current one
           // one last shot in case it was a transient/rate-limit-shaped 403.
         }
+        if (response.status === 400 && requireTool && /tool_choice/i.test(body)) {
+          requireTool = false;
+          console.warn(`[qwen] ${model} does not support tool_choice=required; retrying with auto for role "${role}"`);
+          continue;
+        }
         // A 400/404 naming the model (e.g. a realtime-only model called via
         // chat completions, or a typo'd model id) will never succeed on this
         // model — fall through the chain like a quota exhaustion instead of
         // failing the whole call.
         if ((response.status === 400 || response.status === 404) && modelChain.length > 1 && /model|not.?support|invalid_parameter|access denied/i.test(body)) {
-          exhaustedModels.add(model);
+          benchModel(model);
           const next = firstAvailableModelIndex(modelChain, modelIndex + 1);
           if (next !== -1) {
-            console.warn(`[qwen] ${model} rejected the request (${response.status}); switching to ${modelChain[next]} for role "${role}"`);
+            console.warn(`[qwen] ${model} rejected the request (${response.status}: ${body.replace(/\s+/g, " ").slice(0, 140)}); switching to ${modelChain[next]} for role "${role}"`);
             modelIndex = next;
             continue;
           }

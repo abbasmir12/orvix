@@ -426,7 +426,9 @@ async function runAgentSession(
     revision: boolean;
   }
 ): Promise<AgentSessionOutcome> {
-  const qwen = new QwenClient();
+  // Seeded per agent: parallel agents start on different chain models so
+  // they drain separate quota buckets instead of stampeding the first one.
+  const qwen = new QwenClient(undefined, agent.id);
   // Solo baseline owns the whole mission in one session, so it gets a larger
   // budget than a specialist agent owning one workstream in society mode.
   const maxTurns = run.mode === "solo"
