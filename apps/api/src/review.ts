@@ -28,6 +28,7 @@ import {
 } from "./run.js";
 import { createAgentSignal, postBookEntry } from "./book.js";
 import { agentTaskWorkspace } from "./agentRuntime.js";
+import { publishAgentsMd } from "./agentSkills.js";
 
 export function changedFilesFromDiff(diff: string) {
   return Array.from(diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)).map((match) => match[2]).filter(Boolean);
@@ -488,10 +489,57 @@ function reopenAgentWorkstream(run: MissionRun, agentId: string, instruction: st
  * reopens their workstreams so the scheduler pool revises them. If the
  * MasterMind call fails, the owner entry stays as global guidance.
  */
+/** MasterMind hires a new specialist mid-mission: agent + queued task, announced in the Book. */
+function hireAgentForOwnerRequest(run: MissionRun, spec: { name: string; role: string; instruction: string; files?: string[] }) {
+  const slug = spec.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || `specialist-${run.state.agents.length + 1}`;
+  if (run.state.agents.some((agent) => agent.id === slug)) return null;
+  const agent = {
+    id: slug,
+    name: spec.name.slice(0, 60),
+    role: spec.role.slice(0, 120),
+    currentActivity: "Hired by MasterMind for an owner request",
+    status: "queued" as const,
+    progress: 0,
+    confidence: 0.7
+  };
+  const task = {
+    id: `task-${slug}-${run.state.tasks.length + 1}`,
+    title: spec.instruction.slice(0, 140),
+    ownerAgentId: slug,
+    branch: `feat/${slug}`,
+    dependsOnAgentIds: [],
+    filesLikelyAffected: (spec.files ?? []).slice(0, 12),
+    acceptanceCriteria: [spec.instruction.slice(0, 200), "Work matches the owner's request and existing project conventions."],
+    status: "queued" as const
+  };
+  run.state = {
+    ...run.state,
+    agents: [...run.state.agents, agent],
+    tasks: [...run.state.tasks, task]
+  };
+  postBookEntry(run, {
+    type: "contract",
+    fromAgentId: "mastermind-agent",
+    toAgentIds: [slug],
+    taskId: task.id,
+    scope: "task",
+    visibility: "mentioned",
+    topics: ["owner", "hired", slug],
+    priority: "urgent",
+    status: "final",
+    message: `Welcome aboard. MasterMind hired you for the owner's request: ${spec.instruction}`
+  });
+  return { agent, task };
+}
+
 export async function masterMindOwnerTriage(run: MissionRun, ownerMessage: string) {
   if (!usesQwenReasoning(run) || !isQwenConfigured()) return { assignments: 0 };
   appendEvent(run, "MasterMind woke to triage the owner's request", "info");
-  let routing: { summary: string; assignments: Array<{ agentId: string; instruction: string }> };
+  let routing: {
+    summary: string;
+    assignments: Array<{ agentId: string; instruction: string }>;
+    newAgents?: Array<{ name: string; role: string; instruction: string; files?: string[] }>;
+  };
   try {
     routing = await withQwenUsageRun(run.id, () => new QwenClient().routeOwnerRequestJson({
       mission: run.mission,
@@ -525,19 +573,29 @@ export async function masterMindOwnerTriage(run: MissionRun, ownerMessage: strin
     if (prId !== null) reopened.push(prId);
   }
 
-  if (reopened.length > 0 && run.state.isComplete) {
+  const hired: string[] = [];
+  for (const spec of (routing.newAgents ?? []).slice(0, 3)) {
+    if (!spec?.name?.trim() || !spec?.instruction?.trim()) continue;
+    const created = hireAgentForOwnerRequest(run, spec);
+    if (created) hired.push(created.agent.name);
+  }
+  if (hired.length > 0) {
+    publishAgentsMd(run);
+  }
+
+  if ((reopened.length > 0 || hired.length > 0) && run.state.isComplete) {
     run.state = { ...run.state, isComplete: false, phase: "executing" };
   }
   appendEvent(
     run,
-    valid.length > 0
-      ? `MasterMind routed the owner's request: ${routing.summary} (${valid.map((a) => a.agentId).join(", ")}${reopened.length > 0 ? `; reopened PR ${reopened.map((id) => `#${id}`).join(", ")}` : ""})`
+    valid.length > 0 || hired.length > 0
+      ? `MasterMind routed the owner's request: ${routing.summary} (${[...valid.map((a) => a.agentId), ...hired.map((name) => `hired ${name}`)].join(", ")}${reopened.length > 0 ? `; reopened PR ${reopened.map((id) => `#${id}`).join(", ")}` : ""})`
       : `MasterMind triaged the owner's request: ${routing.summary || "no code change needed"}`,
     "success"
   );
   writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
   broadcast(run, "state", run.state);
-  return { assignments: valid.length, reopened };
+  return { assignments: valid.length + hired.length, reopened, hired };
 }
 
 export function updateReviewedPullRequest(

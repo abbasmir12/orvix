@@ -6,7 +6,7 @@ import { bottomWindow, scrollbarGlyph } from "../lib/scroll.js";
 import type { Agent, AgentCall, AgentCallStatus, AgentTurnEvent, PullRequest, ReasoningArtifact, RunMetricsSummary, SimulationState, TimelineEvent } from "../types.js";
 
 export type CockpitPanel = "focus" | "agents" | "activity" | "input";
-export type ActivityTab = "turns" | "signals" | "prs" | "decisions" | "reasoning" | "book";
+export type ActivityTab = "turns" | "signals" | "prs" | "decisions" | "reasoning" | "book" | "brief";
 export type InspectorTab = "overview" | "trace" | "files" | "book" | "review";
 
 type MissionCockpitProps = {
@@ -200,13 +200,15 @@ function FocusPanel({
   selectedAgent,
   active,
   width,
-  agentTurns
+  agentTurns,
+  briefVersion
 }: {
   state: SimulationState;
   selectedAgent: Agent;
   active: boolean;
   width: number;
   agentTurns: AgentTurnEvent[];
+  briefVersion?: number | null;
 }) {
   const relatedPr = state.pullRequests.find((pr) => pr.ownerAgentId === selectedAgent.id || pr.ownerName === selectedAgent.name);
   const ownedTask = state.tasks.find((task) => task.ownerAgentId === selectedAgent.id);
@@ -266,6 +268,13 @@ function FocusPanel({
         <Text color={theme.muted}>{progressBar(progress, barWidth)} </Text>
         <Text color={theme.text}>{progress}%</Text>
       </Box>
+      {briefVersion && selectedAgent.id === "mastermind-agent" ? (
+        <Box>
+          <Text color={theme.faint}>out  </Text>
+          <Text color={theme.success}>{glyphs.done} debrief v{briefVersion} ready</Text>
+          <Text color={theme.faint}> · press 7</Text>
+        </Box>
+      ) : null}
       <Box marginTop={1}>
         <Text color={theme.faint}>PR   </Text>
         {relatedPr ? (
@@ -339,7 +348,7 @@ function ActivityPanel({
   reasoningArtifacts: ReasoningArtifact[];
   agentTurns: AgentTurnEvent[];
 }) {
-  const tabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "reasoning", "book"];
+  const tabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "reasoning", "book", "brief"];
   const rows = Math.max(3, contentRows);
   const contentWidth = Math.max(20, width - 4);
   const result =
@@ -353,7 +362,9 @@ function ActivityPanel({
           ? decisionLines(state, contentWidth)
           : activityTab === "reasoning"
             ? reasoningLines(reasoningArtifacts, contentWidth)
-            : orvixBookLines(state, contentWidth);
+            : activityTab === "brief"
+              ? briefLines(reasoningArtifacts, contentWidth)
+              : orvixBookLines(state, contentWidth);
   const windowed = bottomWindow(result, rows, scrollOffset);
   const position = windowed.total === 0
     ? "0/0"
@@ -399,6 +410,70 @@ function ActivityPanel({
       </Box>
     </Box>
   );
+}
+
+type MissionBriefRecord = {
+  version: number;
+  trigger?: string;
+  generatedAt?: string;
+  title?: string;
+  summary?: string;
+  features?: string[];
+  keyFiles?: Array<{ path?: string; purpose?: string }>;
+  howToTest?: string[];
+  userActions?: string[];
+  nextSteps?: string[];
+};
+
+/** MasterMind's versioned delivery debriefs, newest first. */
+function briefLines(reasoningArtifacts: ReasoningArtifact[], width: number): ActivityLine[] {
+  const briefs: MissionBriefRecord[] = [];
+  for (const artifact of reasoningArtifacts) {
+    if (artifact.kind !== "mission_brief" || !artifact.content) continue;
+    try {
+      briefs.push(JSON.parse(artifact.content) as MissionBriefRecord);
+    } catch {
+      continue;
+    }
+  }
+  if (briefs.length === 0) {
+    return [{
+      id: "brief-empty",
+      node: <Text color={theme.muted}>No debrief yet — MasterMind writes one the moment the mission completes (and a new version after every owner change).</Text>
+    }];
+  }
+
+  briefs.sort((a, b) => (b.version ?? 0) - (a.version ?? 0));
+  const lines: ActivityLine[] = [];
+  const section = (briefId: number, name: string, items: string[], color: string = theme.muted) => {
+    if (items.length === 0) return;
+    lines.push({ id: `brief-${briefId}-${name}`, node: <Text color={theme.accent} bold>{name}</Text> });
+    items.forEach((item, index) => {
+      lines.push(...labeledLines(`brief-${briefId}-${name}-${index}`, `  ${glyphs.dot} `, item, width, theme.faint, color));
+    });
+  };
+
+  for (const brief of briefs) {
+    const stamp = brief.generatedAt ? ` · ${brief.generatedAt.slice(0, 16).replace("T", " ")}` : "";
+    lines.push({
+      id: `brief-${brief.version}-head`,
+      node: (
+        <Text>
+          <Text color={theme.accentBright} bold>{glyphs.ring} Debrief v{brief.version}</Text>
+          <Text color={theme.text} bold>  {brief.title ?? ""}</Text>
+          <Text color={theme.faint}>{stamp}</Text>
+        </Text>
+      )
+    });
+    if (brief.summary) lines.push(...labeledLines(`brief-${brief.version}-summary`, "", brief.summary, width, theme.muted, theme.text));
+    section(brief.version, "Features", brief.features ?? []);
+    section(brief.version, "Key files", (brief.keyFiles ?? []).map((file) => `${file.path ?? "?"} — ${file.purpose ?? ""}`));
+    section(brief.version, "How to test", brief.howToTest ?? [], theme.success);
+    section(brief.version, "You need to", brief.userActions ?? [], theme.warning);
+    section(brief.version, "Next steps", brief.nextSteps ?? [], theme.cloud);
+    lines.push({ id: `brief-${brief.version}-gap`, node: <Text> </Text> });
+  }
+  return lines;
 }
 
 function agentTurnLines(turns: AgentTurnEvent[], width: number): ActivityLine[] {
@@ -1552,6 +1627,15 @@ export function MissionCockpit({
   const normalActivityRows = Math.max(4, Math.min(8, height - 26));
   const expandedActivityRows = Math.max(8, height - 15);
   const selectedAgent = state.agents[Math.min(selectedAgentIndex, state.agents.length - 1)] ?? state.agents[0];
+  const latestBriefVersion = reasoningArtifacts.reduce((latest, artifact) => {
+    if (artifact.kind !== "mission_brief" || !artifact.content) return latest;
+    try {
+      const parsed = JSON.parse(artifact.content) as { version?: number };
+      return Math.max(latest, parsed.version ?? 0);
+    } catch {
+      return latest;
+    }
+  }, 0) || null;
   const inspectedAgent = inspectedAgentIndex === null
     ? null
     : state.agents[Math.min(inspectedAgentIndex, state.agents.length - 1)] ?? state.agents[0];
@@ -1578,7 +1662,7 @@ export function MissionCockpit({
     return (
       <Box flexDirection="column">
         <TopStatus state={state} width={width} metrics={metrics} />
-        <FocusPanel state={state} selectedAgent={selectedAgent} active width={width} agentTurns={agentTurns} />
+        <FocusPanel state={state} selectedAgent={selectedAgent} active width={width} agentTurns={agentTurns} briefVersion={latestBriefVersion} />
         <CommandBar activePanel={activePanel} expandedPanel={expandedPanel} active={activePanel === "input"} width={width} mode={mode} missionId={missionId} executionStatus={executionStatus} commandDraft={commandDraft} mentionCandidates={mentionCandidates} mentionIndex={mentionIndex} />
       </Box>
     );
@@ -1618,7 +1702,7 @@ export function MissionCockpit({
       <TopStatus state={state} width={width} metrics={metrics} />
       <Box width={width}>
         <Box width={leftWidth}>
-          <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} agentTurns={agentTurns} />
+          <FocusPanel state={state} selectedAgent={selectedAgent} active={activePanel === "focus"} width={leftWidth} agentTurns={agentTurns} briefVersion={latestBriefVersion} />
         </Box>
         <Box width={rightWidth}>
           <AgentsPanel agents={state.agents} selectedAgentIndex={selectedAgentIndex} active={activePanel === "agents"} width={rightWidth} />

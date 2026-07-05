@@ -15,6 +15,7 @@ import { executeAgentTask, getCompletedTaskIds, getExecutableTasks, getExecutedB
 import { escalatePullRequestReview, getReviewAttemptCount, isNonBlockingReviewerPr, reviewPullRequest, trySupersedeEmptyDiffPr } from "./review.js";
 import { runIncrementalBuildGate, runRuntimeAcceptanceGate, shouldRunRuntimeAcceptance } from "./acceptance.js";
 import { envPositiveInt } from "./envConfig.js";
+import { generateMissionBrief } from "./brief.js";
 
 export async function mapWithConcurrency<T, R>(
   items: T[],
@@ -210,6 +211,7 @@ export async function runSchedulerTurn(run: MissionRun) {
 }
 
 function completeMission(run: MissionRun, message: string) {
+  void generateMissionBrief(run, message).catch(() => undefined);
   run.state = {
     ...run.state,
     phase: "final",

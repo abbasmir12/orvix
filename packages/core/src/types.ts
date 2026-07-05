@@ -62,7 +62,7 @@ export type TimelineEvent = {
 
 export type ReasoningArtifact = {
   id: string;
-  kind: "mission_analysis" | "orvix_map" | "organization_design" | "review_rubric" | "final_report" | "agent_execution" | "pr_review";
+  kind: "mission_analysis" | "orvix_map" | "organization_design" | "review_rubric" | "final_report" | "agent_execution" | "pr_review" | "mission_brief";
   status: "completed" | "failed";
   content?: string;
   reasoningContent?: string;

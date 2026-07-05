@@ -122,6 +122,7 @@ const artifactLabels: Record<ReasoningArtifact["kind"], string> = {
   organization_design: "Strategy org design",
   review_rubric: "Critic review rubric",
   final_report: "Release report draft",
+  mission_brief: "MasterMind debrief",
   agent_execution: "Agent execution trace",
   pr_review: "PR review trace"
 };

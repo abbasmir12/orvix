@@ -1547,6 +1547,7 @@ export class QwenClient {
     return parseQwenJson<{
       summary: string;
       assignments: Array<{ agentId: string; instruction: string }>;
+      newAgents?: Array<{ name: string; role: string; instruction: string; files?: string[] }>;
     }>(await this.chat([
       {
         role: "system",
@@ -1555,7 +1556,8 @@ export class QwenClient {
           "You are MasterMind, the coordinator of this Orvix agent organization. The human product OWNER just sent a live request.",
           "Decide which existing agent(s) must act, and write each a concrete, self-contained instruction that fulfils the owner's request.",
           "Prefer the agent whose work packet/branch owns the affected files. Use multiple assignments only when the request genuinely spans owners.",
-          "If the request needs no code change (a status question, acknowledgement), return an empty assignments array.",
+          "You may also HIRE new agents via newAgents — but only when the request is a genuinely new capability or feature area that no existing agent's charter covers. Prefer existing agents for changes to existing surfaces; a new agent gets a clear name, a specialist role, a concrete first instruction, and the files it will own.",
+          "If the request needs no code change (a status question, acknowledgement), return empty assignments and no newAgents.",
           "Return valid compact JSON only. No markdown."
         ].join(" ")
       },
@@ -1570,11 +1572,69 @@ export class QwenClient {
           orvixMap: input.orvixMap,
           outputSchema: {
             summary: "one sentence: how MasterMind is routing this",
-            assignments: [{ agentId: "existing agent id", instruction: "concrete change instruction for that agent" }]
+            assignments: [{ agentId: "existing agent id", instruction: "concrete change instruction for that agent" }],
+            newAgents: [{ name: "New Agent Name", role: "specialist role description", instruction: "first concrete task", files: ["src/files/it/will/own.ts"] }]
           }
         })
       }
     ], { role: "planner", json: true, temperature: 0.1 }))
+  }
+
+  /** MasterMind's end-of-mission debrief for the human owner, versioned per delivery. */
+  async missionBriefJson(input: {
+    mission: string;
+    briefVersion: number;
+    trigger: string;
+    projectType?: string;
+    tasks: unknown;
+    pullRequests: unknown;
+    files: unknown;
+    orvixMapSummary?: string;
+    recentOwnerRequests?: string[];
+  }) {
+    return parseQwenJson<{
+      title: string;
+      summary: string;
+      features: string[];
+      keyFiles: Array<{ path: string; purpose: string }>;
+      howToTest: string[];
+      userActions: string[];
+      nextSteps: string[];
+    }>(await this.chat([
+      {
+        role: "system",
+        content: [
+          ORVIX_OPERATING_CONSTITUTION,
+          "You are MasterMind writing the mission debrief for the human OWNER after a delivery.",
+          "Be concrete and honest: describe what was actually built (from the real task/PR/file evidence given), how to run and test it, anything the owner must do themselves (API keys, deployment, config), and sensible next steps.",
+          "Write for a product owner: plain language, no agent jargon, no invented features.",
+          "Return valid compact JSON only. No markdown."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          mission: input.mission,
+          briefVersion: input.briefVersion,
+          deliveryTrigger: input.trigger,
+          projectType: input.projectType,
+          tasks: input.tasks,
+          pullRequests: input.pullRequests,
+          workspaceFiles: input.files,
+          buildContract: input.orvixMapSummary,
+          recentOwnerRequests: input.recentOwnerRequests,
+          outputSchema: {
+            title: "short delivery title",
+            summary: "2-4 sentences: what was delivered and how the organization built it",
+            features: ["user-facing feature, one line each"],
+            keyFiles: [{ path: "file path", purpose: "what it does" }],
+            howToTest: ["concrete step the owner can run/click"],
+            userActions: ["things only the owner can do (API keys, deploy, accounts); empty if none"],
+            nextSteps: ["sensible follow-ups the owner might ask for"]
+          }
+        })
+      }
+    ], { role: "planner", json: true, temperature: 0.2 }))
   }
 
   async runtimeAcceptanceVerdict(input: {

@@ -37,7 +37,7 @@ function actionErrorMessage(error: unknown, apiUrl: string) {
   return `Execution failed: ${message}`;
 }
 
-const activityTabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "reasoning", "book"];
+const activityTabs: ActivityTab[] = ["turns", "signals", "prs", "decisions", "reasoning", "book", "brief"];
 const inspectorTabs: InspectorTab[] = ["overview", "trace", "files", "book", "review"];
 const enableSgrMouse = "\u001b[?1000h\u001b[?1002h\u001b[?1006h";
 const disableSgrMouse = "\u001b[?1000l\u001b[?1002l\u001b[?1006l";
@@ -325,7 +325,8 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
     prs: 0,
     decisions: 0,
     reasoning: 0,
-    book: 0
+    book: 0,
+    brief: 0
   });
   const [expandedPanel, setExpandedPanel] = useState<CockpitPanel | null>(null);
   const [reasoningArtifacts, setReasoningArtifacts] = useState<ReasoningArtifact[]>(
@@ -771,6 +772,11 @@ export function App({ mission, mode = "mock", apiUrl = "http://localhost:8787", 
 
     if (input === "6") {
       selectActivityTab(activityTabs[5]);
+      return;
+    }
+
+    if (input === "7") {
+      selectActivityTab(activityTabs[6]);
       return;
     }
 
