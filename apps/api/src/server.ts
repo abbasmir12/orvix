@@ -13,6 +13,7 @@ import { createRun } from "./planning.js";
 import { executeAgentTask, executeGitTool, executeNextAgentTask } from "./agentRuntime.js";
 import { reviewNextPullRequest, reviewPullRequest } from "./review.js";
 import { runAutopilot, runSchedulerTurn } from "./scheduler.js";
+import { listRunsOnDisk, resumeRun } from "./resume.js";
 
 export function sendJson(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, {
@@ -89,6 +90,28 @@ export const server = createServer(async (request, response) => {
         eventsUrl: `/missions/${run.id}/events`,
         stateUrl: `/missions/${run.id}`,
         summary: runSummary(run)
+      });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/missions/disk") {
+      sendJson(response, 200, { runs: listRunsOnDisk() });
+      return;
+    }
+
+    const resumeMatch = url.pathname.match(/^\/missions\/([^/]+)\/resume$/);
+    if (request.method === "POST" && resumeMatch) {
+      const result = resumeRun(resumeMatch[1]);
+      if (!result.ok) {
+        sendJson(response, 404, { error: result.error });
+        return;
+      }
+      sendJson(response, 200, {
+        missionId: result.run.id,
+        resumed: result.resumed,
+        eventsUrl: `/missions/${result.run.id}/events`,
+        stateUrl: `/missions/${result.run.id}`,
+        summary: runSummary(result.run)
       });
       return;
     }
