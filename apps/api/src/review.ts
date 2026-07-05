@@ -361,6 +361,9 @@ export function createMockReviewDecision(pr: PullRequest, diff: string): PullReq
  */
 export function trySupersedeEmptyDiffPr(run: MissionRun, pr: PullRequest) {
   if (run.mainNeedsFixes) return false;
+  // An owner change request reopens a PR precisely because NEW work is owed:
+  // an empty diff there means "not started", never "already landed".
+  if (pr.status === "Changes requested" && pr.comments.some((comment) => comment.includes("Owner request"))) return false;
   // "Reviewed at least once" gate: attempt counts are parsed from artifact
   // content, which disk snapshots summarize away — after a resume they read
   // zero. PR comments survive snapshots, so either signal counts.

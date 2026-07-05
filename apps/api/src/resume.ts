@@ -67,7 +67,10 @@ export function resumeRun(missionId: string): { ok: true; run: MissionRun; resum
   runs.set(missionId, run);
 
   if (run.state.isComplete) {
-    appendEvent(run, "Mission resumed from disk (already complete; read-only)", "info");
+    // Still wakeable: an owner request can reopen work, and the autopilot it
+    // kicks refuses to run while planning looks incomplete.
+    run.qwenPlanningComplete = usesQwenReasoning(run);
+    appendEvent(run, "Mission resumed from disk (complete; owner requests can reopen it)", "info");
     return { ok: true, run, resumed: true };
   }
 
