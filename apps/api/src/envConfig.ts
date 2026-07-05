@@ -52,8 +52,15 @@ loadEnvFile();
 export const projectRoot = dirname(findEnvFile() ?? resolve(process.cwd(), ".env"));
 export const workspaceRoot = resolve(projectRoot, ".orvix", "workspaces");
 
+/**
+ * Positive-int env knob. `0`, `none`, or `unlimited` disables the cap
+ * entirely (returns a value far above any realistic agent count); otherwise
+ * the value is clamped to `max` to keep typos from spawning 1000 sessions.
+ */
 export function envPositiveInt(name: string, fallback: number, max = 20) {
-  const value = Number(process.env[name] ?? "");
+  const raw = String(process.env[name] ?? "").trim().toLowerCase();
+  if (raw === "0" || raw === "none" || raw === "unlimited") return 9999;
+  const value = Number(raw);
   if (!Number.isFinite(value) || value < 1) return fallback;
   return Math.min(max, Math.floor(value));
 }

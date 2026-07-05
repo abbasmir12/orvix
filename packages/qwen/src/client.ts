@@ -482,6 +482,18 @@ export function createAgentSessionMessages(input: AgentSessionInput): ChatMessag
 }
 
 export function createQwenConfig(env: NodeJS.ProcessEnv = process.env): QwenConfig {
+  const rawConcurrency = String(env.QWEN_MAX_CONCURRENT_REQUESTS ?? "").trim().toLowerCase();
+  if (rawConcurrency === "0" || rawConcurrency === "none" || rawConcurrency === "unlimited") {
+    return {
+      apiKey: env.DASHSCOPE_API_KEY ?? "",
+      baseUrl: env.QWEN_BASE_URL ?? "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      model: env.QWEN_MODEL ?? "qwen-plus",
+      plannerModel: env.QWEN_PLANNER_MODEL || undefined,
+      agentModel: env.QWEN_AGENT_MODEL || undefined,
+      reviewModel: env.QWEN_REVIEW_MODEL || undefined,
+      maxConcurrentRequests: Number.POSITIVE_INFINITY
+    };
+  }
   const concurrency = Number(env.QWEN_MAX_CONCURRENT_REQUESTS ?? "");
   return {
     apiKey: env.DASHSCOPE_API_KEY ?? "",
