@@ -1,79 +1,278 @@
 # Orvix
 
-**Orvix is a self-organizing AI engineering company.** Give it a mission — "build a SaaS CRM," "build a browser snake game" — and it plans the work, designs its own team of specialist agents, runs them in parallel on real git branches, reviews their pull requests, and gates the result behind a runtime acceptance check before calling the mission done. No human writes a task list; Orvix does.
+<div align="center">
 
-Built for the **Global AI Hackathon with Qwen Cloud — Track 3: Agent Society**, running entirely on Alibaba Cloud Model Studio (DashScope) via Qwen.
+<pre>
+   ▄██████▄  ▄████████  ███    ███  ▄█  ▀████    ▐████▀
+  ███    ███ ███    ███ ███    ███ ███    ███▌   ████▀
+  ███    ███ ███    ███  ███  ███  ███     ███  ▐███
+  ███    ███ ████████▀    ██████   ███     ▀███▄███▀
+  ███    ███ ███   ███     ████    ███     ████▀██▄
+  ███    ███ ███    ███     ██     ███    ▐███  ▀███
+   ▀██████▀  ███    ███      ▀     █▀    ▄████    ███▄
+     ══╡ Self-organizing AI engineering company ╞══
+</pre>
 
-## Why Orvix
+</div>
 
-Most "multi-agent" demos are a single model wearing different hats in one call-and-response loop. Orvix is closer to a real engineering org:
+**Orvix turns one product request into an on-demand AI engineering agency.** It plans the project, creates the specialist agents it needs, lets them coordinate through shared memory, runs their work in parallel branches, reviews their PR-style submissions, and keeps expanding the team when the mission changes.
 
-- **MasterMind** plans the mission and locks a shared build contract (the **Orvix Map**) before anyone writes code.
-- **Strategy Weaver** designs a bespoke org chart for *this* mission — up to 20 named specialists, not a fixed template.
-- Each agent works **independently on its own git worktree branch**, in a real multi-turn tool-use session — it can `read_file`, `list_files`, `get_diff`, react to what it finds, and iterate, not just emit one shot of code blind.
-- Agents coordinate through the **Orvix Book**, a shared ledger of questions, assumptions, contracts, and decisions — instead of a single flat context window.
-- **Critic Council** reviews every PR against the Orvix Map and either merges or sends it back with concrete requested changes.
-- A **Runtime Acceptance Gate** actually builds the project, smoke-tests the pages the map declared, and asks a Qwen judge whether the shipped product matches the mission — before the mission is allowed to complete.
+Instead of a fixed chatbot or a static list of roles, Orvix behaves like a living software organization: **MasterMind directs the mission, Strategy Weaver designs the team, specialists build, Critic Council reviews, and the owner can interrupt mid-flight to redirect or request new work.**
 
-Nothing here is a hidden deterministic fallback dressed up as AI output. When a Qwen call fails, Orvix says so (a `degraded` planning stage, an open Orvix Book question, a failed runtime judge) — it does not synthesize fake success.
+```text
+User mission
+  -> MasterMind analysis
+  -> Orvix Map
+  -> dynamic agent organization
+  -> parallel implementation branches
+  -> Orvix Book coordination
+  -> Critic Council reviews
+  -> runtime acceptance
+  -> final delivery brief
+```
+
+The goal is not to make one AI assistant pretend to be many roles. The goal is to build an agent runtime that can organize itself around the work: decompose the mission, create agents on demand, negotiate through a shared ledger, resolve conflicts, review code, and produce a working output.
+
+## Why This Exists
+
+Most coding agents are single-threaded. They receive a request, produce code, and maybe revise it. Orvix explores a different model:
+
+```text
+software delivery as an autonomous agent society
+```
+
+Orvix is designed around four ideas:
+
+- **Self-organization**: MasterMind and Strategy Weaver decide which agents the mission needs.
+- **Self-expansion**: the [owner channel](docs/owner-channel/) can cause MasterMind to route follow-up work or hire a new specialist.
+- **Parallel execution**: independent agents work in parallel through a dependency-aware scheduler.
+- **Shared organizational memory**: agents coordinate through the [Orvix Book](docs/orvix-book/) instead of one giant shared prompt.
+
+This creates a different product experience: the user asks for an outcome, and Orvix forms the temporary engineering company needed to deliver it.
+
+## What Orvix Builds
+
+Orvix can receive high-level software missions such as:
+
+```text
+Build a SaaS CRM with auth, dashboard, contacts and notes.
+Build a small playable 2D web game in React.
+Build a weather dashboard with search, favorites and error states.
+```
+
+For each mission, Orvix creates a dedicated workspace under `.orvix/workspaces/<missionId>/`, scaffolds a project, runs agents against real files, opens internal PR-style work items, reviews them, merges approved branches, and runs build/acceptance checks before finalizing the mission.
+
+## Core System Concepts
+
+### MasterMind Agent
+
+[MasterMind](docs/architecture/) is the mission director. It reads the user request, watches the mission, resolves conflicts, routes owner instructions, and decides when the project is ready for release.
+
+MasterMind is not a fixed script. It receives live mission state, [Orvix Book](docs/orvix-book/) context, PR status, task status, runtime failures, owner requests, and Qwen reasoning output.
+
+### Orvix Map
+
+The **[Orvix Map](docs/orvix-map/)** is the locked build contract for the mission.
+
+It defines:
+
+- product scope
+- pages, screens, routes, endpoints, or CLI commands
+- components and interaction contracts
+- data and system contracts
+- design direction
+- agent work packets
+- file ownership hints
+- acceptance gates
+- forbidden outputs
+
+Every agent, reviewer, and acceptance gate reads from the same map. This prevents agents from inventing incompatible versions of the product.
+
+### Orvix Book
+
+The **[Orvix Book](docs/orvix-book/)** is the shared coordination ledger.
+
+Agents post:
+
+- questions
+- answers
+- assumptions
+- contracts
+- handoffs
+- conflicts
+- review notes
+- owner instructions
+
+Each agent receives a filtered slice of the Book when it starts a session. This is effectively Orvix's **Agentic Loop Prompt**: agents continuously influence each other through structured messages, not just through the original user prompt.
+
+### Strategy Weaver
+
+[Strategy Weaver](docs/planning/) designs the agent society for the mission. It can create a small team for a small project or a larger organization for a complex product. The system prefers useful specialists over filler roles.
+
+Agents are encouraged to own vertical slices when possible: a complete capability or surface end-to-end, rather than artificial frontend/backend/style fragments that create unnecessary dependency chains.
+
+### Critic Council
+
+[Critic Council](docs/collaboration/) reviews PR-style work against the [Orvix Map](docs/orvix-map/). It sees the diff and the current branch file contents, so it is not fooled by small diffs or already-merged work.
+
+It can:
+
+- approve PRs
+- request changes
+- reject markdown-only implementation work
+- flag missing source evidence
+- route concrete revision requirements back to the responsible agent
+
+### Owner Channel
+
+The human owner can steer a running mission from the cockpit through the **[owner channel](docs/owner-channel/)**.
+
+Examples:
+
+```text
+make the UI more premium and dark
+@frontend-manager switch the dashboard to black and white
+@critic-council review the auth flow more strictly
+```
+
+Owner messages enter the [Orvix Book](docs/orvix-book/) as first-class entries from `owner`. MasterMind is always aware of them. Direct `@agent-id` mentions route to that agent and can reopen work; unaddressed instructions go through MasterMind triage. If no current agent fits the request, MasterMind can create a new specialist for that work.
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph Client
-        CLI["Orvix CLI (Ink/React TUI)<br/>live planning console + agent-turn feed"]
-    end
+![Orvix architecture](docs/architecture/diagrams/architecture.png)
 
-    subgraph API["Orvix API (Node.js)"]
-        Planning["Planning pipeline<br/>research -> council -> scaffold -> analysis -> Orvix Map -> org design"]
-        Scheduler["Scheduler<br/>parallel execution / review / revision waves"]
-        AgentRuntime["Agent runtime<br/>multi-turn tool-use sessions"]
-        Review["Critic Council review"]
-        Acceptance["Runtime acceptance gate"]
-        Book["Orvix Book<br/>shared ledger"]
-    end
+Orvix has two runtimes:
 
-    subgraph Qwen["Alibaba Cloud Model Studio (DashScope)"]
-        QwenAPI["Qwen chat/completions<br/>native tool-calls, JSON mode"]
-    end
+| Runtime | Role |
+| --- | --- |
+| `apps/api` | The actual Orvix runtime: planning, scheduling, Qwen calls, Orvix Map, Orvix Book, git workspaces, reviews, acceptance checks |
+| `apps/cli` | The cockpit: SetupWizard, mission launcher, planning console, execution cockpit, activity tabs, owner prompt bar |
 
-    subgraph Workspace["Mission workspace (local git repo)"]
-        Worktrees["Per-agent git worktrees / branches"]
-        Main["main branch"]
-    end
+The CLI never calls Qwen directly and never mutates git. It talks to the API over REST and Server-Sent Events.
 
-    CLI <--SSE + REST--> API
-    Planning --> QwenAPI
-    AgentRuntime --> QwenAPI
-    Review --> QwenAPI
-    Acceptance --> QwenAPI
-    Scheduler --> AgentRuntime
-    Scheduler --> Review
-    Scheduler --> Acceptance
-    AgentRuntime <--> Worktrees
-    Review -- merge --> Main
-    Acceptance -- npm build + smoke test --> Main
-    AgentRuntime <--> Book
-    Review <--> Book
+This makes the cloud architecture meaningful:
+
+```text
+Local CLI = cockpit
+Alibaba Cloud API = agent society runtime
+Qwen Cloud = model reasoning and tool-call generation
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module map and the full agent-lifecycle sequence diagram.
+Read more: [docs/architecture/](docs/architecture/)
 
-## How a mission runs
+## Mission Lifecycle
 
-1. **Planning** (background, streamed live over SSE): research → planning council → scaffold choice → MasterMind mission analysis → Orvix Map draft + review + lock → Strategy Weaver org design → Critic Council review rubric.
-2. **Execution**: the scheduler runs parallel waves of agent sessions. Each agent gets a system prompt built from its Orvix Map work packet, the Orvix Book context, and its allowed tools, then holds a real multi-turn conversation with Qwen — reading files, writing code, committing, and opening a PR.
-3. **Review**: Critic Council inspects each PR's diff against the Orvix Map and either merges it or requests changes with specific comments; a deterministic gate also rejects markdown-only or scaffold-incoherent PRs before Qwen even sees them.
-4. **Incremental build gate**: after each merge wave, Orvix runs `npm install`/`npm run build` on `main` and immediately routes any break back to the merging agent — integration failures are caught mid-run, not just at the end.
-5. **Runtime acceptance**: once all required PRs are approved, Orvix builds the project for real, smoke-tests the routes the Orvix Map declared, and asks a Qwen judge whether the shipped product satisfies the mission's acceptance gates.
-6. **Orvix Book**: throughout, agents ask each other questions and publish contracts/assumptions/decisions in a shared ledger instead of coordinating through one shared context window.
+### 1. Planning
 
-## Quickstart
+After mission creation, Orvix runs a streamed planning pipeline:
+
+```text
+research
+planning council
+scaffold choice
+MasterMind analysis
+Orvix Map draft/review/lock
+Strategy Weaver organization design
+Critic Council rubric
+```
+
+The CLI shows these stages live in the planning console.
+
+Read more: [docs/planning/](docs/planning/)
+
+### 2. Execution
+
+The scheduler runs a continuous work pool. Revisions, signal handling, PR reviews, agent executions, and build gates can all be active as independent job types.
+
+Agents run multi-turn Qwen sessions with real tools:
+
+```text
+list_files
+read_file
+write_file
+delete_file
+create_branch
+commit_changes
+open_pr
+post_book_entry
+read_book
+read_signals
+research_web
+fetch_url
+```
+
+The model emits tool calls; Orvix executes them against the workspace; tool results are fed back into the next turn.
+
+## Where Generated Projects Live
+
+Each Orvix mission gets its own generated project repo inside the Orvix runtime workspace:
+
+```text
+.orvix/
+  workspaces/
+    <missionId>/
+      repo/                 generated project repository
+        .git/               mission git repo
+        <project files>     app/site/API/game created by agents
+  runs/
+    <missionId>/            mission state, events, Book, signals, turns
+```
+
+If you choose **Local runtime**, these folders are created on your local machine, inside the Orvix repo you started the API from.
+
+If you choose **Alibaba Cloud runtime**, these folders are created on the Alibaba ECS server, because the API running there owns the agent tools, git workspace, build checks, and generated files. Your local CLI is only the cockpit.
+
+```text
+Local runtime:
+  your machine -> .orvix/workspaces/<missionId>/repo
+
+Alibaba Cloud runtime:
+  ECS server -> .orvix/workspaces/<missionId>/repo
+```
+
+Mission snapshots live separately under `.orvix/runs/<missionId>/`, so a restarted API can resume a mission from disk.
+
+### 3. Collaboration
+
+Agents coordinate through the Orvix Book and deterministic guardrails:
+
+- dependency notes
+- file ownership checks
+- merge conflict routing
+- reviewer revision loops
+- MasterMind wake-up pass for blocked work
+
+Read more: [docs/collaboration/](docs/collaboration/)
+
+### 4. Review
+
+Every PR-style work item goes through review. Critic Council validates it against the Orvix Map and branch file contents.
+
+### 5. Runtime Acceptance
+
+When required PRs are approved, Orvix builds the generated project and checks whether the shipped output satisfies the mission.
+
+### 6. Debrief
+
+MasterMind creates a versioned mission brief describing what was built, how to run it, key files, owner actions, and next steps.
+
+## Setup
+
+### Prerequisites
+
+- Node.js 20+
+- npm
+- git
+- Alibaba Cloud Model Studio / DashScope API key for live Qwen mode
+
+### Local Run
 
 ```bash
+git clone <repo-url> orvix
+cd orvix
+cp .env.example .env
+# set DASHSCOPE_API_KEY
 npm install
-cp .env.example .env   # set DASHSCOPE_API_KEY
 npm run build
 ```
 
@@ -83,112 +282,170 @@ Start the API:
 npm run start:api
 ```
 
-Run the CLI against it:
+In another terminal, launch the cockpit:
 
 ```bash
-node apps/cli/dist/index.js mission "Build a 2D snake game in the browser with score and game over" \
-  --mode cloud --api-url http://localhost:8787
+npm run dev
 ```
 
-Or drive the API directly:
+The SetupWizard offers:
+
+| Mode | Purpose |
+| --- | --- |
+| Demo cockpit | Scripted local replay, no Qwen calls |
+| Local runtime | CLI connects to `http://localhost:8787` |
+| Alibaba Cloud runtime | CLI connects to a deployed Orvix API |
+
+Full setup guide: [docs/SETUP.md](docs/SETUP.md)
+
+## Alibaba Cloud Deployment
+
+To run Orvix as a remote agent runtime, deploy the **Orvix API** to Alibaba Cloud ECS and connect the CLI to it.
+
+On the ECS instance:
+
+```bash
+git clone <repo-url> orvix
+cd orvix
+cp .env.example .env
+```
+
+Set:
+
+```bash
+DASHSCOPE_API_KEY=...
+QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
+ORVIX_API_TOKEN=<long-random-secret>
+PORT=8787
+```
+
+Then:
+
+```bash
+npm install
+npm run build
+npm run start:api
+```
+
+Verify:
+
+```bash
+curl http://<ecs-public-ip>:8787/health
+```
+
+Expected:
+
+```json
+{
+  "service": "orvix-api",
+  "status": "ok",
+  "provider": "Alibaba Cloud ready",
+  "qwen": "configured"
+}
+```
+
+From your laptop, run the CLI and choose **Alibaba Cloud runtime**, then paste:
+
+- API URL: `http://<ecs-public-ip>:8787`
+- API token: the same `ORVIX_API_TOKEN`
+
+In this setup:
+
+```text
+your laptop runs the cockpit
+Alibaba Cloud runs the Orvix runtime
+Qwen Cloud handles model reasoning
+generated project files are created on the cloud server
+```
+
+## Environment
+
+Minimum live configuration:
+
+```bash
+DASHSCOPE_API_KEY=...
+QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
+```
+
+For public/cloud API deployments:
+
+```bash
+ORVIX_API_TOKEN=<long-random-secret>
+```
+
+The CLI sends:
+
+```text
+Authorization: Bearer <ORVIX_API_TOKEN>
+```
+
+Full reference: [docs/env-reference/](docs/env-reference/)
+
+## API Examples
+
+Create a live Qwen-backed mission:
 
 ```bash
 curl -X POST http://localhost:8787/missions \
   -H "Content-Type: application/json" \
   -d '{"mission":"Build a SaaS CRM with auth, dashboard, contacts and notes","mode":"qwen"}'
-
-curl http://localhost:8787/missions/<mission_id>          # full state + planning stages
-curl http://localhost:8787/missions/<mission_id>/metrics  # live Qwen usage + progress
-curl http://localhost:8787/missions/<mission_id>/book     # Orvix Book ledger
 ```
 
-`POST /missions` returns in well under a second — planning runs in the background and streams `planning` stage events (`started`/`completed`/`degraded`/`failed` per stage) over the SSE event stream, so nothing blocks and nothing hides a failure.
-
-### CLI cockpit keys (cloud mode)
-
-- `a` autopilot the scheduler · `x` execute next unblocked task · `r` run selected agent · `v` review next PR
-- `1`–`6` switch activity tabs — `1` is the **live agent-turn feed** (default), then signals, PRs, decisions, reasoning, Orvix Book
-- `Tab` switch panels · `↑`/`↓` scroll or select · `Enter` inspect an agent · `m` menu · `q` quit
-
-## Modes
-
-| Mode | What it does |
-| --- | --- |
-| `qwen` | Full Agent Society: Strategy Weaver designs a multi-agent org, agents work in parallel, coordinate via Orvix Book. |
-| `solo` | Single-agent baseline: one generalist agent gets the entire mission alone, sequentially, with no team and no Orvix Book negotiation. Used to measure the society's actual gain. |
-| `mock` | No API key required; deterministic local demo of the UI/flow without live Qwen calls. |
-
-## Benchmark: society vs. solo baseline
-
-Track 3 asks for a measurable efficiency gain over a single-agent baseline. `scripts/benchmark.mjs` runs the identical mission in `solo` and `qwen` mode against a live API, waits for both to finish, and writes a comparison report:
+Inspect state:
 
 ```bash
-npm run start:api &
-npm run benchmark -- "Build a 2D snake game in the browser with score and game over"
+curl http://localhost:8787/missions/<mission_id>
+curl http://localhost:8787/missions/<mission_id>/metrics
+curl http://localhost:8787/missions/<mission_id>/book
 ```
 
-This writes `.orvix/benchmarks/benchmark-report.md` comparing wall-clock time, files written, PRs approved, Qwen calls, and tokens between the two modes. Sample run (mission: a single static HTML page):
-
-| Metric | Solo (1 agent) | Orvix Society |
-| --- | --- | --- |
-| Completed | yes | yes |
-| Wall-clock time | 544s | 785s |
-| Agents | 2 | 4 |
-| Tasks completed | 1/1 | 3/3 |
-| PRs approved | 1/1 | 3/3 |
-| Files written | 1 | 3 |
-| Qwen calls | 14 | 46 |
-| Total tokens | 152,833 | 731,330 |
-
-On a mission this small, Strategy Weaver split trivial work into 3 specialist tasks and the coordination/review overhead outweighed the parallelism gain (society was ~1.4x slower here, though its output was more polished — CSS custom properties, focus states, hover states). This is the honest result, not a cherry-picked one: Agent Society earns its keep on missions with real independent surface area (e.g. a CRM with auth + dashboard + contacts + notes), where specialists can genuinely parallelize instead of subdividing one page. Re-run the benchmark on a larger, multi-surface mission for a submission number that reflects that case.
-
-## Qwen Cloud configuration
+Post an owner instruction:
 
 ```bash
-DASHSCOPE_API_KEY=sk-...
-QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-QWEN_MODEL=qwen-plus
+curl -X POST http://localhost:8787/missions/<mission_id>/owner \
+  -H "Content-Type: application/json" \
+  -d '{"message":"make the dashboard darker and more premium"}'
 ```
 
-`packages/qwen` talks to Alibaba Cloud Model Studio's OpenAI-compatible `/chat/completions` endpoint with native `tool_calls`, JSON response mode, per-role model overrides (`QWEN_PLANNER_MODEL` / `QWEN_AGENT_MODEL` / `QWEN_REVIEW_MODEL`), a global concurrency semaphore, and exponential-backoff retry on 429/5xx. See `.env.example` for every tunable (timeouts, concurrency, agent turn/tool-call budgets, solo-mode budgets).
-
-**Model fallback chains.** `QWEN_MODEL` (and each per-role override) accepts either a single model or a comma-separated chain, e.g. `QWEN_MODEL=qwen3.7-max,qwen3.7-plus,qwen3.6-max`. Each model has its own free-tier quota pool; when the active model's quota is exhausted mid-run, the client detects the `AllocationQuota` error and seamlessly switches to the next model in the chain for all subsequent calls — no dropped mission, no manual restart. A single value with no comma behaves exactly as before.
-
-## Alibaba Cloud deployment
-
-```bash
-docker build -f apps/api/Dockerfile -t orvix-api .
-docker run -p 8787:8787 --env-file .env orvix-api
-```
-
-Deployment proof checklist for the submission video:
-
-- ECS instance (or equivalent container runtime) on Alibaba Cloud running the `orvix-api` image
-- Public `/health` returning `provider: "Alibaba Cloud ready"` and `qwen: "configured"`
-- CLI connected with `--mode cloud --api-url <public-api-url>` running a live mission end to end
-
-## Project structure
+## Repository Layout
 
 ```text
-apps/api/src/
-  envConfig.ts     env + path config
-  run.ts           MissionRun registry, SSE broadcast, metrics
-  planning.ts       research -> council -> scaffold -> Orvix Map -> org design pipeline
-  agentRuntime.ts   multi-turn agent tool-use sessions
-  review.ts         Critic Council PR review + merge
-  acceptance.ts     runtime build/smoke/Qwen-judge acceptance gate
-  scheduler.ts      parallel execution/review/revision waves, autopilot
-  book.ts           Orvix Book shared ledger
-  research.ts       web search / URL fetch tools for planning
-  server.ts         HTTP routes + SSE
-apps/cli/src/
-  App.tsx           SSE client, live state
-  components/       PlanningConsole, MissionCockpit, and the rest of the Ink UI
-packages/core/src/  simulation state, orchestrator, shared types
-packages/qwen/src/  DashScope client, prompts, retry/concurrency/usage tracking
-packages/workspace/src/  sandboxed git workspace + worktree tools
-scripts/benchmark.mjs    solo vs. society benchmark runner
+apps/
+  api/              Orvix runtime API
+  cli/              Ink/React terminal cockpit
+
+packages/
+  core/             shared types, simulation state, run store
+  qwen/             Qwen/DashScope client, prompts, tool schemas
+  workspace/        git workspace, worktrees, file tools, scaffold helpers
+
+docs/
+  architecture/     system architecture and diagrams
+  orvix-map/        locked mission blueprint
+  orvix-book/       shared agent ledger
+  planning/         planning pipeline
+  collaboration/    negotiation and conflict handling
+  owner-channel/    human-in-the-loop steering
+  cli/              CLI cockpit guide
+  env-reference/    environment variables
+  SETUP.md          local and Alibaba Cloud setup
 ```
+
+## Documentation Map
+
+| Topic | Link |
+| --- | --- |
+| Architecture | [docs/architecture/](docs/architecture/) |
+| Setup | [docs/SETUP.md](docs/SETUP.md) |
+| CLI | [docs/cli/](docs/cli/) |
+| Orvix Map | [docs/orvix-map/](docs/orvix-map/) |
+| Orvix Book | [docs/orvix-book/](docs/orvix-book/) |
+| Planning | [docs/planning/](docs/planning/) |
+| Collaboration | [docs/collaboration/](docs/collaboration/) |
+| Owner Channel | [docs/owner-channel/](docs/owner-channel/) |
+| Environment | [docs/env-reference/](docs/env-reference/) |
 
 ## License
 

@@ -1,0 +1,48 @@
+flowchart TB
+    User(["Owner / hackathon judge"])
+
+    subgraph ClientSide["Client"]
+        CLI["Orvix CLI (Ink/React TUI)\nSetupWizard -> LaunchPrompt -> Cockpit\nleft rail: brand, mission, phase, live repo tree\nSSE live feed + owner @mention prompt bar"]
+    end
+
+    subgraph AlibabaCloud["Alibaba Cloud"]
+        subgraph ECS["ECS instance (Node.js runtime)"]
+            API["Orvix API (Node.js / TypeScript)"]
+            subgraph APIInternals["apps/api/src"]
+                Planning["Planning pipeline\nresearch -> council -> scaffold\n-> Orvix Map -> org design"]
+                Scheduler["Work-pool scheduler\nparallel revisions/reviews/executions\nMasterMind wake pass every round"]
+                AgentRuntime["Agent runtime\nmulti-turn tool-use sessions"]
+                Review["Critic Council review\n(branch file contents as ground truth)"]
+                Acceptance["Runtime acceptance + incremental\nbuild gates (npm install/build,\nserialized per repo)"]
+                Book["Orvix Book\nshared ledger + signals"]
+                OwnerChannel["Owner channel\n@mention routing + hiring"]
+                Brief["Mission debrief generator\n(versioned briefs)"]
+            end
+            Workspace[("Mission workspaces\n.orvix/workspaces/<id>/\nper-agent git worktrees + main")]
+        end
+    end
+
+    subgraph ModelStudio["Alibaba Cloud Model Studio (DashScope)"]
+        QwenAPI["Qwen chat/completions\nnative tool-calls, JSON mode,\nmodel fallback chains, /models metadata"]
+    end
+
+    User -- "mission text / owner @mentions" --> CLI
+    CLI -- "REST + SSE, Bearer ORVIX_API_TOKEN" --> API
+    API --> Planning
+    API --> Scheduler
+    Planning --> QwenAPI
+    AgentRuntime --> QwenAPI
+    Review --> QwenAPI
+    Acceptance --> QwenAPI
+    Scheduler --> AgentRuntime
+    Scheduler --> Review
+    Scheduler --> Acceptance
+    Scheduler --> Brief
+    AgentRuntime <--> Workspace
+    Review -- "merge on approve" --> Workspace
+    Acceptance -- "npm build + smoke test" --> Workspace
+    AgentRuntime <--> Book
+    Review <--> Book
+    OwnerChannel <--> Book
+    CLI -- "owner instruction" --> OwnerChannel
+    Brief -- "versioned mission_brief" --> CLI

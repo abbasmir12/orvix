@@ -6,3 +6,4 @@ apps/*/dist/
 !.env.example
 npm-debug.log*
 .orvix/
+DRAFT.md
