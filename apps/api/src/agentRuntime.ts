@@ -204,7 +204,15 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
     entry.result.ok && (entry.toolCall.tool === "write_file" || entry.toolCall.tool === "delete_file")
   );
 
-  if (usesQwenReasoning(run) && !hasImplementation && implementationTaskRequiresEvidence(task)) {
+  // A session without writes is only a failure when the branch itself has
+  // nothing to review. A revision session that inspects the branch and finds
+  // it already correct (e.g. the reviewer misread a small diff, or another
+  // agent landed the packet on main) legitimately writes nothing — treat the
+  // existing branch diff as the implementation and hand it back to review.
+  const evidence = hasReviewableBranchEvidence(run, task.branch);
+  const branchAlreadyReviewable = evidence.ok && evidence.reviewable;
+
+  if (usesQwenReasoning(run) && !hasImplementation && !branchAlreadyReviewable && implementationTaskRequiresEvidence(task)) {
     const retryCount = getNoImplementationRetryCount(run, task.id);
     if (retryCount < 1) {
       const message = `${agent.name} finished the session without successful write_file or delete_file calls; MasterMind is requeuing one concrete implementation retry with an explicit Orvix Map contract.`;
@@ -252,7 +260,9 @@ export async function executeAgentTask(run: MissionRun, agentId: string, options
   }
 
   const failed = outcome.failed;
-  const evidence = hasReviewableBranchEvidence(run, task.branch);
+  if (!failed && !hasImplementation && branchAlreadyReviewable) {
+    appendEvent(run, `${agent.name} made no new writes but ${task.branch} already carries a reviewable diff; routing the existing branch to review`, "info");
+  }
   if (!failed && evidence.ok && evidence.reviewable) {
     updateAgentTaskState(run, agent.id, task.id, "completed", "Workspace execution complete");
     updatePullRequestFromTask(run, task, "In progress", "Reviewing");

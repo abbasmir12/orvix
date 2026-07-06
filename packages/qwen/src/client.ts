@@ -1703,6 +1703,7 @@ export class QwenClient {
     pr: PullRequest;
     diff: string;
     files: unknown;
+    branchFileContents?: unknown;
     reviewAttempt?: number;
     reviewAttemptLimit?: number;
     organization?: unknown;
@@ -1727,7 +1728,9 @@ export class QwenClient {
           "decision must be either approve or request_changes.",
           "Approve if the PR is a coherent prototype packet: relevant files, concrete artifacts, meaningful progress, and no obviously dangerous nonsense.",
           "For frontend/UI/product PRs, do not approve if the diff only adds disconnected components and never updates a visible route or app entry point.",
-          "For TypeScript/Next/React PRs, request changes if imports reference files that are not present in the submitted file list or diff.",
+          "For TypeScript/Next/React PRs, request changes if imports reference files that are not present in the submitted file list, diff, or branchFileContents.",
+          "CRITICAL diff semantics: the diff is relative to the CURRENT main branch. A file with a tiny or empty diff usually means that file is ALREADY correct on main — never conclude a file is missing content from its diff alone. branchFileContents holds the full current content of every changed file on the PR branch; treat it as ground truth before claiming anything is absent.",
+          "Never ask the author to run shell commands (npm run build, npm test, dev servers) or to provide execution/build evidence. Agents have no shell; Orvix's incremental build gate compiles main after merge and routes real build breaks back automatically. Judge file contents only.",
           "Request changes only when the diff is empty, wrong-domain, incoherent, unsafe, or missing the minimum artifact type needed for the task.",
           "When requesting changes, act like a prompter: give the owner exact next files/functions/tests/contracts to add.",
           "Do not repeatedly ask for vague production completeness. Convert broad concerns into small actionable next-step instructions.",
@@ -1751,8 +1754,11 @@ export class QwenClient {
           },
           pullRequest: input.pr,
           orvixMap: input.orvixMap,
-          diff: input.diff.slice(0, 12000),
+          diff: input.diff.length > 48000
+            ? `${input.diff.slice(0, 48000)}\n[diff truncated — rely on branchFileContents for full file state]`
+            : input.diff,
           files: input.files,
+          branchFileContents: input.branchFileContents,
           orvixBook: input.orvixBook,
           reviewerPolicy: [
             "Be strict about empty or irrelevant diffs.",
@@ -1760,7 +1766,9 @@ export class QwenClient {
             "Prefer actionable coaching over rejection.",
             "If requesting changes, list exact additions that the owner can implement in the next revision.",
             "If the PR is good enough as a prototype but has production gaps, approve and list risks/follow-up work.",
-            "Frontend/product PRs must touch a visible app route or explicitly justify why another PR owns the route.",
+            "Frontend/product PRs must touch a visible app route or explicitly justify why another PR owns the route — but if branchFileContents or main already wires the route correctly, that criterion is satisfied.",
+            "Do not request changes to a file whose current content (in branchFileContents) already satisfies the acceptance criteria, even if its diff looks small.",
+            "Do not demand build/test command output from the author; the build gate owns compilation verification.",
             "Call out missing imports, missing package dependencies, JSX saved as .ts, and route files that will 404."
           ],
           outputSchema: {
@@ -1779,6 +1787,7 @@ export class QwenClient {
     pr: PullRequest;
     diff: string;
     files: unknown;
+    branchFileContents?: unknown;
     reviewAttempt?: number;
     reviewAttemptLimit?: number;
     organization?: unknown;

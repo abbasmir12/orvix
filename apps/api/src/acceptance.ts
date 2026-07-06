@@ -35,10 +35,13 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
   const repoDir = workspaceOf(run).repoDir;
 
   if (projectType === "nextjs" || projectType === "react-vite" || projectType === "express-api" || projectType === "node-cli") {
-    if (!existsSync(resolve(repoDir, "node_modules"))) {
+    // Always install: agents edit package.json but have no shell, so the
+    // gate owns dependency installation — a stale node_modules otherwise
+    // fails the build on modules the manifest already declares.
+    await withRepoCommandLock(repoDir, async () => {
       checks.push(await runCommandCheck(repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
-    }
-    checks.push(await runCommandCheck(repoDir, "npm run build", ["run", "build"]));
+      checks.push(await runCommandCheck(repoDir, "npm run build", ["run", "build"]));
+    });
   }
 
   if (projectType === "python") {
@@ -160,12 +163,29 @@ export async function runRuntimeAcceptanceGate(run: MissionRun): Promise<Runtime
  * with the work-pool scheduler, agent executions and reviews keep running
  * while a build check is in progress.
  */
+// npm install/build in the same repoDir must never overlap: the incremental
+// build gate and the runtime acceptance gate can both fire around a merge
+// wave, and a `next build` racing another build (or an install rewriting
+// node_modules mid-build) produces phantom failures like "Cannot find module
+// 'tailwindcss'" or ENOENT on .next/build-manifest.json that agents can
+// never fix from file edits. Serialize per repo directory.
+const repoCommandLocks = new Map<string, Promise<unknown>>();
+
+export async function withRepoCommandLock<T>(repoDir: string, work: () => Promise<T>): Promise<T> {
+  const previous = repoCommandLocks.get(repoDir) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(work);
+  repoCommandLocks.set(repoDir, next.catch(() => undefined));
+  return next;
+}
+
 export function runCommandCheck(cwd: string, name: string, args: string[], command = "npm") {
   return new Promise<{ name: string; ok: boolean; output: string }>((resolvePromise) => {
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: 120000
+      // Cold npm installs of a Next.js tree routinely exceed two minutes;
+      // a timeout kill here surfaces to agents as an unfixable build break.
+      timeout: 420000
     });
     let output = "";
     let spawnError: Error | undefined;
@@ -398,6 +418,21 @@ export function findRuntimeFixOwner(run: MissionRun) {
     run.state.agents.find((agent) => agent.id !== "mastermind-agent");
 }
 
+function moduleDeclaredInManifest(repoDir: string, moduleName: string) {
+  try {
+    const manifest = JSON.parse(readFileSync(resolve(repoDir, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const packageName = moduleName.startsWith("@")
+      ? moduleName.split("/").slice(0, 2).join("/")
+      : moduleName.split("/")[0];
+    return Boolean(manifest.dependencies?.[packageName] ?? manifest.devDependencies?.[packageName]);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Fast build check on main after a merge wave. Catches "looks good but does
  * not compile" merges immediately instead of at the final acceptance gate.
@@ -412,10 +447,23 @@ export async function runIncrementalBuildGate(run: MissionRun, mergedPrIds: numb
 
   appendEvent(run, "Runtime QA started incremental build check on main after merge wave", "info");
   const checks: RuntimeAcceptanceResult["checks"] = [];
-  if (!existsSync(resolve(workspace.repoDir, "node_modules"))) {
-    checks.push(await runCommandCheck(workspace.repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]));
-  }
-  checks.push(await runCommandCheck(workspace.repoDir, "npm run build", ["run", "build"]));
+  // Always install before building: agents change package.json but cannot
+  // run npm themselves, so a merge that adds a dependency would otherwise
+  // fail here forever with "Cannot find module" on a correct manifest.
+  await withRepoCommandLock(workspace.repoDir, async () => {
+    let install = await runCommandCheck(workspace.repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]);
+    let build = await runCommandCheck(workspace.repoDir, "npm run build", ["run", "build"]);
+    // "Cannot find module 'x'" for a module package.json already declares is
+    // an install/race artifact, not an agent mistake — one clean retry of
+    // install+build resolves it instead of reopening merged PRs forever.
+    const missingModule = build.ok ? undefined : /Cannot find module '([^']+)'/.exec(build.output)?.[1];
+    if ((!install.ok || missingModule) && (!missingModule || moduleDeclaredInManifest(workspace.repoDir, missingModule))) {
+      appendEvent(run, `Build gate: ${missingModule ? `'${missingModule}' is declared in package.json but unresolved` : "npm install failed"} — retrying npm install + build once before blaming the merge`, "warning");
+      install = await runCommandCheck(workspace.repoDir, "npm install --package-lock=false", ["install", "--package-lock=false"]);
+      build = await runCommandCheck(workspace.repoDir, "npm run build", ["run", "build"]);
+    }
+    checks.push(install, build);
+  });
 
   const failed = checks.filter((check) => !check.ok);
   if (failed.length === 0) {

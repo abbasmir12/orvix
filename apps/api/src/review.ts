@@ -13,6 +13,7 @@ import {
   getGitStatus,
   listWorkspaceFiles,
   mergeWorkspaceBranch,
+  readBranchFile,
   syncWorkspaceBranch,
   type Workspace
 } from "@orvix/workspace";
@@ -210,12 +211,25 @@ export async function reviewPullRequest(run: MissionRun, prId: number) {
       git: getGitStatus(workspaceOf(run))
     };
   }
+  // The diff alone blinds the reviewer: a file that is already correct on
+  // main shows a tiny/empty diff, and a large PR gets truncated. Attach the
+  // full current branch content of every changed file as ground truth.
+  const branchFileContents: Record<string, string> = {};
+  for (const changedPath of changedFilesFromDiff(diff.output).slice(0, 16)) {
+    const fileRead = readBranchFile(workspaceOf(run), pr.branch, changedPath);
+    if (fileRead.ok && fileRead.tool === "read_branch_file") {
+      branchFileContents[changedPath] = fileRead.output.length > 6000
+        ? `${fileRead.output.slice(0, 6000)}\n[file truncated for review payload]`
+        : fileRead.output;
+    }
+  }
   const decision = usesQwenReasoning(run) && isQwenConfigured()
     ? await withQwenUsageRun(run.id, () => new QwenClient().reviewWorkspacePullRequestJson({
       mission: run.mission,
       pr,
       diff: diff.output,
       files,
+      branchFileContents,
       reviewAttempt: attemptCount + 1,
       reviewAttemptLimit,
       organization: run.state.organization,

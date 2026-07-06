@@ -59,6 +59,7 @@ export type GitToolResult =
   | { ok: true; tool: "checkout_branch"; branch: string; output: string }
   | { ok: true; tool: "commit_changes"; branch: string; commit?: string; output: string }
   | { ok: true; tool: "get_diff"; branch: string; output: string }
+  | { ok: true; tool: "read_branch_file"; branch: string; output: string }
   | { ok: true; tool: "merge_branch"; branch: string; output: string }
   | { ok: true; tool: "sync_branch"; branch: string; output: string }
   | { ok: false; tool: string; error: string };
@@ -296,6 +297,21 @@ export function getBranchDiff(workspace: Workspace, branch: string, baseBranch =
     };
   } catch (error) {
     return { ok: false, tool: "get_diff", error: errorMessage(error) };
+  }
+}
+
+export function readBranchFile(workspace: Workspace, branch: string, path: string): GitToolResult {
+  try {
+    const safeBranch = validateBranchName(branch);
+    const output = runGit(mainWorkspaceFor(workspace), ["show", `${safeBranch}:${path}`]);
+    return {
+      ok: true,
+      tool: "read_branch_file",
+      branch: safeBranch,
+      output
+    };
+  } catch (error) {
+    return { ok: false, tool: "read_branch_file", error: errorMessage(error) };
   }
 }
 

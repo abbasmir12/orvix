@@ -107,6 +107,12 @@ function runtimeLabel(mode: RunMode, apiUrl: string) {
     : { label: "ALIBABA CLOUD", color: theme.cloud };
 }
 
+function runtimeName(apiUrl: string) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(apiUrl)
+    ? "local machine"
+    : "Alibaba Cloud";
+}
+
 function ModeStatusLine({ mode, health, apiUrl }: { mode: RunMode; health: ApiHealth; apiUrl: string }) {
   if (mode === "mock") {
     return (
@@ -128,7 +134,11 @@ function ModeStatusLine({ mode, health, apiUrl }: { mode: RunMode; health: ApiHe
     return <Text color={theme.warning}>{glyphs.degraded} API is up but DASHSCOPE_API_KEY is missing — agents cannot reach Qwen.</Text>;
   }
 
-  return <Text color={theme.success}>{glyphs.done} live — real Orvix agents on {health.qwenModel.split(",")[0]}</Text>;
+  return (
+    <Text color={theme.success}>
+      {glyphs.done} live — Orvix runtime on {runtimeName(apiUrl)}
+    </Text>
+  );
 }
 
 export function LaunchPrompt({ mode, onModeChange, apiUrl, apiToken, onSubmit, onResume }: LaunchPromptProps) {

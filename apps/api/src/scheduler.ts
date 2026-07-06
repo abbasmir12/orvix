@@ -296,6 +296,62 @@ export async function runMissionPool(run: MissionRun) {
 
   const failedOut = (key: string) => (jobFailures.get(key) ?? 0) >= failureLimit;
 
+  // MasterMind wake-up pass: a blocked workstream must never silently stall a
+  // live mission. Runs EVERY scheduling round — not only when the pool drains,
+  // because one agent stuck in a long revision cycle would otherwise starve
+  // every other blocked agent of its wake-up forever. Gives each blocked task
+  // (whose PR has not landed) up to wakeLimit fresh sessions: re-queue it,
+  // tell the owner why it was blocked, clear its paused failure counters.
+  const wakeBlockedTasks = (busyAgents: Set<string>): number => {
+    const executedTaskIds = getCompletedTaskIds(run);
+    let woken = 0;
+    for (const task of run.state.tasks) {
+      if (executedTaskIds.has(task.id) || task.status !== "blocked") continue;
+      if (busyAgents.has(task.ownerAgentId) || inFlight.has(`execution:${task.id}`)) continue;
+      const ownedPr = run.state.pullRequests.find((pr) => pr.branch === task.branch && pr.ownerAgentId === task.ownerAgentId);
+      if (ownedPr?.status === "Approved") continue;
+      if (ownedPr && inFlight.has(`revision:${ownedPr.id}`)) continue;
+      const wakes = wakeCounts.get(task.id) ?? 0;
+      if (wakes >= wakeLimit) continue;
+      wakeCounts.set(task.id, wakes + 1);
+      jobFailures.delete(`execution:${task.id}`);
+      if (ownedPr) jobFailures.delete(`revision:${ownedPr.id}`);
+      const owner = run.state.agents.find((candidate) => candidate.id === task.ownerAgentId);
+      const blockReason = owner?.currentActivity || "blocked without a recorded reason";
+      postBookEntry(run, {
+        type: "decision",
+        fromAgentId: "mastermind-agent",
+        toAgentIds: [task.ownerAgentId],
+        taskId: task.id,
+        scope: "task",
+        visibility: "mentioned",
+        topics: ["wake-up", "blocked-recovery", task.id],
+        priority: "urgent",
+        status: "final",
+        message: [
+          `Wake-up call (${wakes + 1}/${wakeLimit}): your workstream "${task.title}" was blocked (${blockReason}) — the mission cannot leave it behind.`,
+          "Start this session with implementation, not investigation: your FIRST tool calls must write_file the concrete files from your work packet, then commit_changes and open_pr.",
+          "If your branch already contains the required work, verify it with get_diff and commit_changes anything uncommitted; the existing diff will be routed to review.",
+          "If something genuinely prevents implementation, post_book_entry a question naming the exact blocker instead of ending the session empty."
+        ].join(" ")
+      });
+      run.state = {
+        ...run.state,
+        tasks: run.state.tasks.map((candidate) => candidate.id === task.id ? { ...candidate, status: "queued" } : candidate),
+        agents: run.state.agents.map((candidate) => candidate.id === task.ownerAgentId && candidate.status !== "completed"
+          ? { ...candidate, status: "queued", currentActivity: "Woken by MasterMind after block" }
+          : candidate)
+      };
+      appendEvent(run, `MasterMind woke ${owner?.name ?? task.ownerAgentId} (wake ${wakes + 1}/${wakeLimit}): blocked workstream "${task.title}" re-queued`, "warning");
+      woken += 1;
+    }
+    if (woken > 0) {
+      writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
+      broadcast(run, "state", run.state);
+    }
+    return woken;
+  };
+
   const kindCount = (kind: PoolJobKind) => Array.from(inFlight.values()).filter((job) => job.kind === kind).length;
 
   for (let round = 0; round < 5000; round += 1) {
@@ -306,6 +362,10 @@ export async function runMissionPool(run: MissionRun) {
 
     const busyAgents = new Set(Array.from(inFlight.values()).flatMap((job) => job.agentId ? [job.agentId] : []));
     const buildRunning = inFlight.has("build");
+
+    // Wake blocked workstreams even while other agents keep the pool busy;
+    // re-queued tasks are picked up by the execution loop later this round.
+    wakeBlockedTasks(busyAgents);
 
     for (const exhaustedPr of run.state.pullRequests.filter((pr) =>
       pr.status === "Changes requested" && getReviewAttemptCount(run, pr.id) >= reviewAttemptLimit
@@ -403,55 +463,13 @@ export async function runMissionPool(run: MissionRun) {
       continue;
     }
 
-    // MasterMind wake-up pass: a blocked workstream must never silently
-    // stall a live mission. Before concluding "blocked", give each blocked
-    // task (whose PR has not landed) up to two fresh sessions: re-queue it,
-    // tell the owner exactly why it was blocked and what evidence the next
-    // session must produce, and go around the loop again.
-    const executedTaskIds = getCompletedTaskIds(run);
-    let wokenThisRound = 0;
-    for (const task of run.state.tasks) {
-      if (executedTaskIds.has(task.id) || task.status !== "blocked") continue;
-      const ownedPr = run.state.pullRequests.find((pr) => pr.branch === task.branch && pr.ownerAgentId === task.ownerAgentId);
-      if (ownedPr?.status === "Approved") continue;
-      const wakes = wakeCounts.get(task.id) ?? 0;
-      if (wakes >= wakeLimit) continue;
-      wakeCounts.set(task.id, wakes + 1);
-      jobFailures.delete(`execution:${task.id}`);
-      const owner = run.state.agents.find((candidate) => candidate.id === task.ownerAgentId);
-      const blockReason = owner?.currentActivity || "blocked without a recorded reason";
-      postBookEntry(run, {
-        type: "decision",
-        fromAgentId: "mastermind-agent",
-        toAgentIds: [task.ownerAgentId],
-        taskId: task.id,
-        scope: "task",
-        visibility: "mentioned",
-        topics: ["wake-up", "blocked-recovery", task.id],
-        priority: "urgent",
-        status: "final",
-        message: [
-          `Wake-up call (${wakes + 1}/${wakeLimit}): your workstream "${task.title}" was blocked (${blockReason}) and the rest of the organization has drained — you are the critical path.`,
-          "Start this session with implementation, not investigation: your FIRST tool calls must write_file the concrete files from your work packet, then commit_changes and open_pr.",
-          "If something genuinely prevents implementation, post_book_entry a question naming the exact blocker instead of ending the session empty."
-        ].join(" ")
-      });
-      run.state = {
-        ...run.state,
-        tasks: run.state.tasks.map((candidate) => candidate.id === task.id ? { ...candidate, status: "queued" } : candidate),
-        agents: run.state.agents.map((candidate) => candidate.id === task.ownerAgentId && candidate.status !== "completed"
-          ? { ...candidate, status: "queued", currentActivity: "Woken by MasterMind after block" }
-          : candidate)
-      };
-      appendEvent(run, `MasterMind woke ${owner?.name ?? task.ownerAgentId} (wake ${wakes + 1}/${wakeLimit}): blocked workstream "${task.title}" re-queued`, "warning");
-      wokenThisRound += 1;
-    }
-    if (wokenThisRound > 0) {
-      writeStateSnapshot(run.store, run.state, run.reasoningArtifacts);
-      broadcast(run, "state", run.state);
+    // Pool drained with tasks still blocked: one final wake pass (nothing is
+    // busy anymore) before accepting "blocked" as the pool outcome.
+    if (wakeBlockedTasks(new Set()) > 0) {
       continue;
     }
 
+    const executedTaskIds = getCompletedTaskIds(run);
     if (run.state.tasks.some((task) => !executedTaskIds.has(task.id))) {
       outcome = "blocked_waiting_dependencies";
       break;
