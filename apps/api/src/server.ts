@@ -550,4 +550,10 @@ export const server = createServer(async (request, response) => {
 
 server.listen(port, () => {
   console.log(`orvix-api listening on http://localhost:${port}`);
+  const token = String(process.env.ORVIX_API_TOKEN ?? "").trim();
+  if (token) {
+    console.log("orvix-api auth enabled: use this same ORVIX_API_TOKEN in the CLI cloud setup.");
+  } else {
+    console.log("orvix-api auth disabled: set ORVIX_API_TOKEN before exposing this API publicly.");
+  }
 });

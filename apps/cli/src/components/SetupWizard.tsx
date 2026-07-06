@@ -17,6 +17,7 @@ type SetupWizardProps = {
 
 type RuntimeChoice = "demo" | "local" | "cloud";
 type Field = "url" | "token";
+type WizardStage = "choose" | "cloud";
 type CheckState =
   | { status: "idle" }
   | { status: "checking"; label: string }
@@ -105,6 +106,7 @@ function StatusLine({ check }: { check: CheckState }) {
 export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }: SetupWizardProps) {
   const { exit } = useApp();
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [stage, setStage] = useState<WizardStage>("choose");
   const [cloudUrl, setCloudUrl] = useState(defaultApiUrl);
   const [token, setToken] = useState(defaultApiToken);
   const [field, setField] = useState<Field>("url");
@@ -151,7 +153,7 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
 
   useEffect(() => {
     setCheck({ status: "idle" });
-  }, [selectedIndex, cloudUrl, token]);
+  }, [selectedIndex, cloudUrl, token, stage]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -159,27 +161,37 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
       return;
     }
 
-    if (key.leftArrow) {
+    if (key.escape && stage === "cloud") {
+      setStage("choose");
+      return;
+    }
+
+    if (key.leftArrow && stage === "choose") {
       setSelectedIndex((current) => (current === 0 ? choices.length - 1 : current - 1));
       return;
     }
 
-    if (key.rightArrow) {
+    if (key.rightArrow && stage === "choose") {
       setSelectedIndex((current) => (current + 1) % choices.length);
       return;
     }
 
-    if (key.tab) {
+    if (key.tab && stage === "cloud") {
       setField((current) => current === "url" ? "token" : "url");
       return;
     }
 
     if (key.return) {
+      if (selected.id === "cloud" && stage === "choose") {
+        setStage("cloud");
+        setField("url");
+        return;
+      }
       void verifyAndContinue(selected.id);
       return;
     }
 
-    if (selected.id !== "cloud") return;
+    if (selected.id !== "cloud" || stage !== "cloud") return;
 
     if (key.backspace || key.delete) {
       if (field === "url") setCloudUrl((current) => current.slice(0, -1));
@@ -206,16 +218,29 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
         ))}
       </Box>
 
-      {selected.id === "cloud" ? (
-        <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor={theme.cloud} paddingX={2} paddingY={1}>
-          <Text color={theme.cloud} bold>Cloud connection</Text>
-          <Text color={field === "url" ? theme.accentBright : theme.muted}>
-            API URL    {field === "url" ? glyphs.chevron : " "} {cloudUrl || "https://your-orvix-api.example.com"}
-          </Text>
-          <Text color={field === "token" ? theme.accentBright : theme.muted}>
-            API token  {field === "token" ? glyphs.chevron : " "} {token ? "•".repeat(Math.min(token.length, 28)) : "optional unless server requires ORVIX_API_TOKEN"}
-          </Text>
-          <Text color={theme.faint}>Alibaba ECS note: open the API port in the security group, or put the API behind 80/443.</Text>
+      {selected.id === "cloud" && stage === "cloud" ? (
+        <Box justifyContent="center" marginTop={1}>
+          <Box flexDirection="column" width={88} borderStyle="double" borderColor={theme.cloud} paddingX={2} paddingY={1}>
+            <Box justifyContent="space-between">
+              <Text color={theme.cloud} bold>{glyphs.ring} Alibaba Cloud connection</Text>
+              <Text color={theme.faint}>Esc back</Text>
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+              <Text color={theme.muted}>Paste the public URL of the Orvix API running on your Alibaba ECS instance.</Text>
+              <Text color={field === "url" ? theme.accentBright : theme.text}>
+                API URL    {field === "url" ? glyphs.chevron : " "} {cloudUrl || "https://your-orvix-api.example.com"}
+              </Text>
+              <Text color={field === "token" ? theme.accentBright : theme.text}>
+                API token  {field === "token" ? glyphs.chevron : " "} {token ? "•".repeat(Math.min(token.length, 32)) : "paste ORVIX_API_TOKEN from the cloud server"}
+              </Text>
+            </Box>
+            <Box marginTop={1} flexDirection="column">
+              <Text color={theme.cloud}>Runtime checklist</Text>
+              <Text color={theme.faint}>1. Set ORVIX_API_TOKEN on the cloud server before starting the API.</Text>
+              <Text color={theme.faint}>2. The API prints whether auth is enabled when it starts.</Text>
+              <Text color={theme.faint}>3. Open the API port in the Alibaba ECS security group, or proxy it through 80/443.</Text>
+            </Box>
+          </Box>
         </Box>
       ) : null}
 
@@ -224,7 +249,9 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
       </Box>
 
       <Box marginTop={1} justifyContent="center">
-        <Text color={theme.faint}>←/→ runtime · Tab field · Enter verify/start · Ctrl+C exit</Text>
+        <Text color={theme.faint}>
+          {stage === "cloud" ? "Tab field · Enter verify/start · Esc back · Ctrl+C exit" : "←/→ runtime · Enter select/start · Ctrl+C exit"}
+        </Text>
       </Box>
     </Box>
   );
