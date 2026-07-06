@@ -54,10 +54,22 @@ const choices: Array<{
   }
 ];
 
+/** Orvix's own default API port (see PORT in .env.example) — assumed only for bare http:// hosts with no port, since https:// implies a reverse proxy already terminating on 443. */
+const DEFAULT_API_PORT = "8787";
+
 function normalizeUrl(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return "";
-  return /^https?:\/\//i.test(trimmed) ? trimmed.replace(/\/+$/, "") : `http://${trimmed.replace(/\/+$/, "")}`;
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol === "http:" && !parsed.port) {
+      parsed.port = DEFAULT_API_PORT;
+    }
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return withScheme.replace(/\/+$/, "");
+  }
 }
 
 function RuntimeCard({
