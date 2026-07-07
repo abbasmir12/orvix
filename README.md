@@ -13,10 +13,10 @@ keeps expanding the team when the mission changes.
 [![Deployed](https://img.shields.io/badge/deployed%20on-Alibaba%20Cloud-FF6A00?logo=alibabacloud&logoColor=white)](docs/DEPLOYMENT.md)
 [![Powered by](https://img.shields.io/badge/powered%20by-Qwen%20Cloud-e0793f)](docs/DEPLOYMENT.md)
 
-**[Architecture PDF](docs/architecture/diagrams/orvix-architecture.pdf)** ·
-**[Deployment Proof](docs/DEPLOYMENT.md)** ·
-**[Full Documentation](docs/README.md)** ·
-**[Alibaba Cloud Proof Recording](https://youtu.be/CaVT8MNpp8E)**
+[![Architecture PDF](https://img.shields.io/badge/%F0%9F%93%84_Architecture-PDF-e0793f?style=for-the-badge)](docs/architecture/diagrams/orvix-architecture.pdf)
+[![Deployment Docs](https://img.shields.io/badge/%E2%98%81%EF%B8%8F_Deployment-Docs-FF6A00?style=for-the-badge)](docs/DEPLOYMENT.md)
+[![Full Documentation](https://img.shields.io/badge/%F0%9F%93%9A_Full-Documentation-4c8bf5?style=for-the-badge)](docs/README.md)
+[![Watch Proof Video](https://img.shields.io/badge/%E2%96%B6_Watch-Proof_Video-red?style=for-the-badge)](https://youtu.be/CaVT8MNpp8E)
 
 </div>
 
