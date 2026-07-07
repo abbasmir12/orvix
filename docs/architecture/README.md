@@ -10,6 +10,11 @@ explains how those pieces fit together and why.
 Diagram source: [`diagrams/architecture.mmd`](diagrams/architecture.mmd) (Mermaid — from
 `docs/architecture`, re-render with `npx @mermaid-js/mermaid-cli -i diagrams/architecture.mmd -o diagrams/architecture.png -b white`).
 
+A four-page PDF version — title/overview, this system diagram, the mission-lifecycle
+sequence diagram, and a component breakdown — is at
+[`diagrams/orvix-architecture.pdf`](diagrams/orvix-architecture.pdf), for submission
+purposes.
+
 This document covers the system shape and module map. For the mechanics of *how agents
 actually coordinate*, see [`orvix-map/`](../orvix-map/) (the build contract),
 [`orvix-book/`](../orvix-book/) (the shared ledger), [`planning/`](../planning/) (how the map
