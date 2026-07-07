@@ -4,7 +4,8 @@ Orvix's backend runs live on an Alibaba Cloud ECS instance, calling Qwen through
 Model Studio. This document is the submission-facing proof: what's actually running where, how
 the CLI and API connect to it, and exactly which lines of code call Alibaba Cloud's services.
 
-**Demo video:** https://youtu.be/CaVT8MNpp8E
+**Alibaba Cloud deployment proof recording** (separate from the 3-minute functional demo):
+https://youtu.be/CaVT8MNpp8E
 
 ## What's actually running on Alibaba Cloud
 
