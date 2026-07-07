@@ -406,7 +406,11 @@ docs/
 
 ## Contributing
 
-Orvix is early. Issues and PRs are welcome once the hackathon judging period ends.
+Orvix is early, and we genuinely value the people who take the time to file an issue, suggest
+an idea, or open a PR — this project gets better because someone else looked at it and cared
+enough to speak up. That said: the repo is currently locked to its submitted state for
+hackathon judging, so issues and PRs will start getting reviewed and merged once the judging
+period ends. Star or watch the repo if you'd like to be notified when it opens up.
 
 ## License
 
