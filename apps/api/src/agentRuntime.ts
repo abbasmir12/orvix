@@ -541,8 +541,8 @@ async function runAgentSession(
     reasoningContent = response.reasoningContent ?? reasoningContent;
 
     // Prefer the serving model's REAL window (from the provider's /models
-    // metadata — e.g. DeepSeek v4 flash reports 1M) over the env fallback,
-    // re-read every turn because chain fallbacks can switch models mid-session.
+    // metadata) over the env fallback, re-read every turn because chain
+    // fallbacks can switch models mid-session.
     const windowTokens = response.contextWindow ?? fallbackWindowTokens;
     const promptTokens = response.usage?.promptTokens ?? 0;
     const contextPercent = Math.min(999, Math.round((promptTokens / windowTokens) * 100));

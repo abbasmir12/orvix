@@ -534,9 +534,9 @@ function parseModelChain(raw: string): string[] {
 }
 
 // Real context windows per model id, fetched once per process from the
-// provider's /models endpoint (OpenRouter: context_length; other OpenAI-
-// compatible hosts use similar keys). Lets compaction use the model's true
-// window (e.g. DeepSeek v4 flash = 1M) instead of one conservative default.
+// provider's /models endpoint (field names vary slightly by host, e.g.
+// context_length). Lets compaction use the model's true window instead of
+// one conservative default.
 const modelContextWindows = new Map<string, number>();
 let modelsMetadataFetch: Promise<void> | null = null;
 

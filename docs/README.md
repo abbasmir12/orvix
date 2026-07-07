@@ -16,6 +16,7 @@
 | --- | --- |
 | [`architecture/`](architecture/) | System diagram, module map, mission lifecycle sequence, design principles |
 | [`SETUP.md`](SETUP.md) | Local setup, and deploying the API to an Alibaba Cloud ECS instance (repo fetch, npm build, `ORVIX_API_TOKEN`, connecting the CLI) |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | Proof of the live Alibaba Cloud deployment: exact code that calls Alibaba Cloud Model Studio, the health-check evidence, how the CLI connects to it |
 | [`env-reference/`](env-reference/) | Every environment variable, what it defaults to, when to touch it |
 | [`cli/`](cli/) | CLI flags, the SetupWizard, cockpit keybindings, the prompt bar / owner channel, slow-connection settings |
 | [`architecture/diagrams/architecture.mmd`](architecture/diagrams/architecture.mmd) / `.png` | The architecture diagram source and rendered image |
