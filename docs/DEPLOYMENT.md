@@ -1,8 +1,10 @@
-# Deployment: Proof of Alibaba Cloud
+# Deployment: Proof of Alibaba Cloud + Qwen Cloud
 
-Orvix's backend runs live on an Alibaba Cloud ECS instance, calling Qwen through Alibaba Cloud
-Model Studio. This document is the submission-facing proof: what's actually running where, how
-the CLI and API connect to it, and exactly which lines of code call Alibaba Cloud's services.
+Orvix's backend runs live on an Alibaba Cloud ECS instance, calling Qwen models through
+**Qwen Cloud** — the Alibaba Cloud Model Studio (DashScope) API surface the hackathon's own
+sign-up flow, credits, and Discord all refer to as Qwen Cloud. This document is the
+submission-facing proof: what's actually running where, how the CLI and API connect to it, and
+exactly which lines of code call Qwen Cloud / Alibaba Cloud's services.
 
 **Alibaba Cloud deployment proof recording** (separate from the 3-minute functional demo):
 https://youtu.be/CaVT8MNpp8E
@@ -12,7 +14,7 @@ https://youtu.be/CaVT8MNpp8E
 | Piece | Where it runs |
 | --- | --- |
 | Orvix API (`apps/api`) — planning, scheduling, agent runtime, review, acceptance gates | Docker container on an Alibaba Cloud ECS instance |
-| Qwen model calls | Alibaba Cloud Model Studio (DashScope), via its OpenAI-compatible endpoint |
+| Qwen model calls | **Qwen Cloud** (Alibaba Cloud Model Studio / DashScope), via its OpenAI-compatible endpoint |
 | Mission state | Persisted to disk on the same ECS instance (`.orvix/runs/<missionId>/`) |
 | Orvix CLI (`apps/cli`) | Runs wherever the user is — a laptop, a different machine — and talks to the ECS instance only over HTTP/SSE |
 
@@ -38,18 +40,18 @@ curl http://<ecs-public-ip>:8787/health
 }
 ```
 
-`provider: "Alibaba Cloud ready"` and a `qwenBaseUrl` pointing at Alibaba Cloud Model Studio's
-DashScope endpoint together confirm both halves of the requirement: the compute is Alibaba
-Cloud, and the model calls are Alibaba Cloud Model Studio (Qwen Cloud) — not a local process,
-not a different provider.
+`provider: "Alibaba Cloud ready"` and a `qwenBaseUrl` pointing at Qwen Cloud's DashScope
+endpoint together confirm both halves of the requirement: the compute is Alibaba Cloud, and the
+model calls go through **Qwen Cloud** (Alibaba Cloud Model Studio / DashScope) — not a local
+process, not a different provider.
 
 ## Where this is in the code
 
-### 1. The API calls Alibaba Cloud Model Studio directly
+### 1. The API calls Qwen Cloud directly
 
 [`packages/qwen/src/client.ts`](https://github.com/abbasmir12/orvix/blob/main/packages/qwen/src/client.ts#L487-L505) —
-`createQwenConfig()` defaults `baseUrl` to Alibaba Cloud Model Studio's OpenAI-compatible
-endpoint:
+`createQwenConfig()` defaults `baseUrl` to Qwen Cloud's OpenAI-compatible endpoint (Alibaba
+Cloud Model Studio / DashScope):
 
 ```ts
 baseUrl: env.QWEN_BASE_URL ?? "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -75,11 +77,11 @@ workspaces, then ships only `@orvix/api`'s runtime dependencies plus the compile
 `core`/`qwen`/`workspace` packages, with `git` installed since agent sessions run real
 `git worktree`/`npm install`/`npm run build` commands against mission workspaces.
 
-### 4. Environment configuration tying the deployment to Alibaba Cloud
+### 4. Environment configuration tying the deployment to Qwen Cloud
 
 [`.env.example`](https://github.com/abbasmir12/orvix/blob/main/.env.example) — `QWEN_BASE_URL`
-and `DASHSCOPE_API_KEY` are the two variables that point the deployed API at Alibaba Cloud
-Model Studio. Full reference: [`env-reference/`](env-reference/).
+and `DASHSCOPE_API_KEY` are the two variables that point the deployed API at Qwen Cloud
+(Alibaba Cloud Model Studio). Full reference: [`env-reference/`](env-reference/).
 
 ## How the CLI connects to the Alibaba Cloud instance
 

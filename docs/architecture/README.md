@@ -27,7 +27,7 @@ resolution), and [`owner-channel/`](../owner-channel/) (human-in-the-loop steeri
 | --- | --- |
 | Mission state, planning, scheduling, review, acceptance, the Orvix Book | `apps/api` — a single Node process, no external services |
 | Cockpit UI, live rail, prompt bar, owner channel | `apps/cli` — an Ink/React terminal app that talks to the API over REST + SSE |
-| Model calls | `packages/qwen` — Alibaba Cloud Model Studio (DashScope) OpenAI-compatible endpoint |
+| Model calls | `packages/qwen` — Qwen Cloud (Alibaba Cloud Model Studio / DashScope) OpenAI-compatible endpoint |
 | Sandboxed git operations | `packages/workspace` — every mission gets its own repo under `.orvix/workspaces/<missionId>/`, one git worktree per agent branch |
 | Shared types + on-disk snapshots | `packages/core` |
 
@@ -149,7 +149,7 @@ packages/workspace/src/
 sequenceDiagram
     participant U as User
     participant API as Orvix API
-    participant Q as Qwen (DashScope)
+    participant Q as Qwen Cloud (DashScope)
     participant WS as Git worktree
     participant Book as Orvix Book
 
