@@ -14,7 +14,7 @@ second shape is what the hackathon submission requires proof of.
 ## 2. Fetch the repo
 
 ```bash
-git clone <this-repo-url> orvix
+git clone https://github.com/abbasmir12/orvix.git orvix
 cd orvix
 ```
 
@@ -120,7 +120,7 @@ just a client of it over the public internet.
 
 ```bash
 ssh <user>@<ecs-public-ip>
-git clone <this-repo-url> orvix
+git clone https://github.com/abbasmir12/orvix.git orvix
 cd orvix
 cp .env.example .env
 ```

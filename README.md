@@ -268,7 +268,7 @@ MasterMind creates a versioned mission brief describing what was built, how to r
 ### Local Run
 
 ```bash
-git clone <repo-url> orvix
+git clone https://github.com/abbasmir12/orvix.git orvix
 cd orvix
 cp .env.example .env
 # set DASHSCOPE_API_KEY
@@ -305,7 +305,7 @@ To run Orvix as a remote agent runtime, deploy the **Orvix API** to Alibaba Clou
 On the ECS instance:
 
 ```bash
-git clone <repo-url> orvix
+git clone https://github.com/abbasmir12/orvix.git orvix
 cd orvix
 cp .env.example .env
 ```
