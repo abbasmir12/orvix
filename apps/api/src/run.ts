@@ -293,14 +293,43 @@ export function mapWorkPacketForAgent(run: MissionRun, agentId: string, taskId?:
 
   const normalize = (value: unknown) => String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const haystack = ` ${normalize(`${agent?.id ?? ""} ${agent?.name ?? ""} ${agent?.role ?? ""} ${task?.title ?? ""} ${task?.branch ?? ""}`)} `;
-  const genericTokens = new Set(["packet", "work", "agent", "builder", "component", "components", "specialist", "developer", "task", "feature"]);
+  const genericTokens = new Set([
+    "packet", "work", "agent", "builder", "component", "components", "specialist", "developer", "task", "feature",
+    // File-extension tokens: nearly every packet's mustCreateOrUpdate ends in
+    // one of these, and nearly every task title/branch mentions a matching
+    // file — so they'd score across almost every candidate indiscriminately
+    // instead of actually discriminating between packets.
+    "tsx", "jsx", "ts", "js", "css", "html", "json", "md"
+  ]);
   const tokenHits = (value: unknown, weight: number) => {
     let score = 0;
     for (const token of normalize(value).split(" ")) {
-      if (token.length > 3 && !genericTokens.has(token) && haystack.includes(` ${token}`)) score += weight;
-      else if (token.length > 3 && !genericTokens.has(token) && haystack.includes(token)) score += weight;
+      // Whole-word match only (haystack is pre-padded with leading/trailing
+      // spaces) — a naked substring check let short identifiers like
+      // "error"/"loading" falsely match inside unrelated camelCase names an
+      // integration task's title legitimately mentions (e.g. "ErrorBanner",
+      // "LoadingSpinner"), which could outscore an agent's own packet and
+      // lock it out of files it actually owns. >=3 (not >3) so a 3-letter
+      // but load-bearing basename like "app" (App.tsx) still counts.
+      if (token.length >= 3 && !genericTokens.has(token) && haystack.includes(` ${token} `)) score += weight;
     }
     return score;
+  };
+
+  // Org design consistently phrases task titles as "Create <exact file
+  // path> ..." (matching the packet's own mustCreateOrUpdate), so a
+  // verbatim mention of the full path is a far stronger ownership signal
+  // than any bag-of-tokens overlap — e.g. an integration/assembly task's
+  // title and role legitimately reuse other packets' own vocabulary
+  // ("error", "loading", "responsive layout") just by describing what it
+  // wires together, which can otherwise outscore the packet that actually
+  // owns the file. Matched case-insensitively against the raw (non-token,
+  // non-normalized) title/branch so a malformed map entry like
+  // "src/App.tsx (layout)" does not falsely match a clean mention.
+  const rawTaskText = `${task?.title ?? ""} ${task?.branch ?? ""}`.toLowerCase();
+  const literalPathBonus = (file: unknown) => {
+    const raw = String(file ?? "").trim().toLowerCase();
+    return raw.length > 0 && rawTaskText.includes(raw) ? 20 : 0;
   };
 
   let best: (typeof packets)[number] | null = null;
@@ -310,7 +339,7 @@ export function mapWorkPacketForAgent(run: MissionRun, agentId: string, taskId?:
     for (const owned of packet.owns ?? []) score += tokenHits(owned, 2);
     for (const file of packet.mustCreateOrUpdate ?? []) {
       const base = String(file).split("/").pop()?.replace(/\.[a-z.]+$/i, "") ?? "";
-      score += tokenHits(base, 3);
+      score += tokenHits(base, 3) + literalPathBonus(file);
     }
     const role = normalize(packet.suggestedAgentRole);
     if (role && haystack.includes(role)) score += 1;

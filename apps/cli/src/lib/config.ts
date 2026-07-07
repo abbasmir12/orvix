@@ -12,22 +12,26 @@ import { join } from "node:path";
 export type OrvixCliConfig = {
   /** Emit terminal mouse-tracking sequences for wheel scroll + panel hover. */
   mouseTrack: boolean;
+  /** Last Alibaba Cloud API URL/token that verified successfully, so the SetupWizard can offer them again next run. */
+  lastCloudUrl?: string;
+  lastCloudToken?: string;
 };
 
 const defaults: OrvixCliConfig = {
   mouseTrack: true
 };
 
+const configDir = join(homedir(), ".orvix");
+const configPath = join(configDir, "cli.json");
+
 function loadConfigFile(): Partial<OrvixCliConfig> {
-  const dir = join(homedir(), ".orvix");
-  const path = join(dir, "cli.json");
   try {
-    if (!existsSync(path)) {
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(path, `${JSON.stringify(defaults, null, 2)}\n`, "utf8");
+    if (!existsSync(configPath)) {
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(configPath, `${JSON.stringify(defaults, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       return {};
     }
-    return JSON.parse(readFileSync(path, "utf8")) as Partial<OrvixCliConfig>;
+    return JSON.parse(readFileSync(configPath, "utf8")) as Partial<OrvixCliConfig>;
   } catch {
     return {};
   }
@@ -43,5 +47,25 @@ function envBool(name: string): boolean | undefined {
 const fileConfig = loadConfigFile();
 
 export const cliConfig: OrvixCliConfig = {
-  mouseTrack: envBool("ORVIX_MOUSE_TRACK") ?? fileConfig.mouseTrack ?? defaults.mouseTrack
+  mouseTrack: envBool("ORVIX_MOUSE_TRACK") ?? fileConfig.mouseTrack ?? defaults.mouseTrack,
+  lastCloudUrl: fileConfig.lastCloudUrl,
+  lastCloudToken: fileConfig.lastCloudToken
 };
+
+/**
+ * Persists a verified Alibaba Cloud connection to ~/.orvix/cli.json (mode
+ * 0600, since it may hold a bearer token) so the SetupWizard can autofill it
+ * next run. Best-effort: a failed write should never block the CLI.
+ */
+export function saveLastCloudConnection(url: string, token?: string) {
+  cliConfig.lastCloudUrl = url;
+  cliConfig.lastCloudToken = token;
+  try {
+    mkdirSync(configDir, { recursive: true });
+    const current = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {};
+    const next = { ...current, lastCloudUrl: url, lastCloudToken: token };
+    writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // best-effort persistence only
+  }
+}

@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { BrandMark } from "./BrandMark.js";
+import { cliConfig, saveLastCloudConnection } from "../lib/config.js";
 import { glyphs, theme } from "../lib/theme.js";
 
 export type RuntimeProfile = {
@@ -119,11 +120,37 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
   const { exit } = useApp();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [stage, setStage] = useState<WizardStage>("choose");
-  const [cloudUrl, setCloudUrl] = useState(defaultApiUrl);
-  const [token, setToken] = useState(defaultApiToken);
+  // No explicit --api-url/--api-token override: offer the last Alibaba
+  // Cloud connection that verified successfully, instead of the generic
+  // localhost default.
+  const hasExplicitOverride = defaultApiUrl !== "http://localhost:8787" || Boolean(defaultApiToken);
+  const rememberedUrl = !hasExplicitOverride ? cliConfig.lastCloudUrl : undefined;
+  const rememberedToken = !hasExplicitOverride ? cliConfig.lastCloudToken : undefined;
+  const [cloudUrl, setCloudUrl] = useState(rememberedUrl ?? defaultApiUrl);
+  const [token, setToken] = useState(rememberedToken ?? defaultApiToken);
+  // A remembered value already verified successfully last run — it's real
+  // data, not a guess, so it renders normally and isn't wiped by the first
+  // keystroke the way the generic localhost default is.
+  const [urlTouched, setUrlTouched] = useState(Boolean(rememberedUrl));
+  const [tokenTouched, setTokenTouched] = useState(Boolean(rememberedToken));
   const [field, setField] = useState<Field>("url");
   const [check, setCheck] = useState<CheckState>({ status: "idle" });
   const selected = choices[selectedIndex];
+
+  // Ink never erases rows above a new frame that is shorter than the last
+  // one — switching from the 3-card chooser to the single connection panel
+  // left stale rows pinned above the new frame. Hard-clear on stage
+  // transitions only (never on first mount — clearing before Ink's first
+  // paint leaves a blank screen until something else forces a repaint,
+  // e.g. maximizing the window).
+  const mountedStage = useRef(false);
+  useEffect(() => {
+    if (!mountedStage.current) {
+      mountedStage.current = true;
+      return;
+    }
+    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  }, [stage]);
 
   async function verifyAndContinue(choice: RuntimeChoice) {
     if (choice === "demo") {
@@ -156,6 +183,9 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
         return;
       }
 
+      if (choice === "cloud") {
+        saveLastCloudConnection(apiUrl, token.trim() || undefined);
+      }
       setCheck({ status: "ok", label: "Runtime verified. Opening mission launcher..." });
       setTimeout(() => onComplete({ mode: "cloud", apiUrl, apiToken: token.trim() || undefined }), 350);
     } catch {
@@ -193,6 +223,16 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
       return;
     }
 
+    if (key.downArrow && stage === "cloud") {
+      setField("token");
+      return;
+    }
+
+    if (key.upArrow && stage === "cloud") {
+      setField("url");
+      return;
+    }
+
     if (key.return) {
       if (selected.id === "cloud" && stage === "choose") {
         setStage("cloud");
@@ -206,31 +246,52 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
     if (selected.id !== "cloud" || stage !== "cloud") return;
 
     if (key.backspace || key.delete) {
-      if (field === "url") setCloudUrl((current) => current.slice(0, -1));
-      if (field === "token") setToken((current) => current.slice(0, -1));
+      if (field === "url") {
+        setUrlTouched(true);
+        setCloudUrl((current) => current.slice(0, -1));
+      }
+      if (field === "token") {
+        setTokenTouched(true);
+        setToken((current) => current.slice(0, -1));
+      }
       return;
     }
 
     if (input && !key.ctrl && !key.meta) {
-      if (field === "url") setCloudUrl((current) => `${current}${input}`);
-      if (field === "token") setToken((current) => `${current}${input}`);
+      // The URL field arrives prefilled with a default (localhost, or the
+      // last-used URL) — the first keystroke or paste replaces it outright
+      // instead of appending, so users don't have to manually clear it.
+      if (field === "url") {
+        setCloudUrl((current) => (urlTouched ? `${current}${input}` : input));
+        setUrlTouched(true);
+      }
+      if (field === "token") {
+        setToken((current) => (tokenTouched ? `${current}${input}` : input));
+        setTokenTouched(true);
+      }
     }
   });
+
+  const urlIsPlaceholder = !urlTouched || !cloudUrl;
+  const urlDisplay = cloudUrl || "https://your-orvix-api.example.com";
+  const tokenIsPlaceholder = !tokenTouched || !token;
 
   return (
     <Box flexDirection="column" paddingX={2} paddingY={1}>
       <Box flexDirection="column" alignItems="center" marginBottom={1}>
         <BrandMark />
-        <Text color={theme.muted}>Choose where the Orvix agent society should run.</Text>
+        <Text color={theme.muted}>
+          {stage === "choose" ? "Choose where the Orvix agent society should run." : "Connect to your deployed Orvix API."}
+        </Text>
       </Box>
 
-      <Box justifyContent="center" marginTop={1}>
-        {choices.map((choice, index) => (
-          <RuntimeCard key={choice.id} choice={choice} active={index === selectedIndex} />
-        ))}
-      </Box>
-
-      {selected.id === "cloud" && stage === "cloud" ? (
+      {stage === "choose" ? (
+        <Box justifyContent="center" marginTop={1}>
+          {choices.map((choice, index) => (
+            <RuntimeCard key={choice.id} choice={choice} active={index === selectedIndex} />
+          ))}
+        </Box>
+      ) : (
         <Box justifyContent="center" marginTop={1}>
           <Box flexDirection="column" width={88} borderStyle="double" borderColor={theme.cloud} paddingX={2} paddingY={1}>
             <Box justifyContent="space-between">
@@ -239,11 +300,14 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
             </Box>
             <Box marginTop={1} flexDirection="column">
               <Text color={theme.muted}>Paste the public URL of the Orvix API running on your Alibaba ECS instance.</Text>
+              {rememberedUrl ? (
+                <Text color={theme.faint}>Remembered from your last successful connection — start typing to use a different one.</Text>
+              ) : null}
               <Text color={field === "url" ? theme.accentBright : theme.text}>
-                API URL    {field === "url" ? glyphs.chevron : " "} {cloudUrl || "https://your-orvix-api.example.com"}
+                API URL    {field === "url" ? glyphs.chevron : " "} <Text color={urlIsPlaceholder ? theme.faint : undefined}>{urlDisplay}</Text>
               </Text>
               <Text color={field === "token" ? theme.accentBright : theme.text}>
-                API token  {field === "token" ? glyphs.chevron : " "} {token ? "•".repeat(Math.min(token.length, 32)) : "paste ORVIX_API_TOKEN from the cloud server"}
+                API token  {field === "token" ? glyphs.chevron : " "} <Text color={tokenIsPlaceholder ? theme.faint : undefined}>{token ? "•".repeat(Math.min(token.length, 32)) : "paste ORVIX_API_TOKEN from the cloud server"}</Text>
               </Text>
             </Box>
             <Box marginTop={1} flexDirection="column">
@@ -254,7 +318,7 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
             </Box>
           </Box>
         </Box>
-      ) : null}
+      )}
 
       <Box marginTop={1} justifyContent="center">
         <StatusLine check={check} />
@@ -262,7 +326,7 @@ export function SetupWizard({ defaultApiUrl, defaultApiToken = "", onComplete }:
 
       <Box marginTop={1} justifyContent="center">
         <Text color={theme.faint}>
-          {stage === "cloud" ? "Tab field · Enter verify/start · Esc back · Ctrl+C exit" : "←/→ runtime · Enter select/start · Ctrl+C exit"}
+          {stage === "cloud" ? "Tab/↑↓ field · Enter verify/start · Esc back · Ctrl+C exit" : "←/→ runtime · Enter select/start · Ctrl+C exit"}
         </Text>
       </Box>
     </Box>

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Command } from "commander";
 import { render } from "ink";
 import { App } from "./App.js";
@@ -29,6 +29,21 @@ function Root({
     apiToken: apiToken ?? process.env.ORVIX_API_TOKEN
   });
   const [setupComplete, setSetupComplete] = useState(Boolean(initialMission || resumeId || process.env.ORVIX_SKIP_ONBOARDING));
+
+  // Ink never erases rows above a new frame that is shorter than the last —
+  // switching SetupWizard -> LaunchPrompt -> App left stale rows from the
+  // previous screen pinned above the new one. Hard-clear on screen
+  // boundaries only (never on first mount — clearing before Ink's first
+  // paint leaves a blank screen until something else forces a repaint,
+  // e.g. maximizing the window).
+  const mountedRoot = useRef(false);
+  useEffect(() => {
+    if (!mountedRoot.current) {
+      mountedRoot.current = true;
+      return;
+    }
+    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  }, [setupComplete, Boolean(mission), Boolean(activeResumeId)]);
 
   if (activeResumeId) {
     return <App mission={mission || `Resuming ${activeResumeId}`} mode="cloud" apiUrl={runtime.apiUrl} apiToken={runtime.apiToken} resumeId={activeResumeId} />;
@@ -70,8 +85,61 @@ function Root({
 const enableAltScreen = "[?1049h";
 const disableAltScreen = "[?1049l";
 
+/**
+ * SSH sessions (and some ConPTY/Windows Terminal panes) can hand the remote
+ * shell a stale terminal size at connect time — process.stdout.columns/rows
+ * only gets corrected once the client sends a real window-change, which
+ * normally only happens when the user actually resizes the window. Ink's
+ * very first layout pass then runs against the wrong dimensions and paints
+ * nothing, which looks identical to a blank screen until the user nudges
+ * the window. Probe the terminal's real size directly with a cursor-position
+ * report (works over plain SSH, unlike trusting the reported columns/rows)
+ * and patch it in before Ink ever renders.
+ */
+function probeRealTerminalSize(timeoutMs = 200): Promise<{ columns: number; rows: number } | null> {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      resolve(null);
+      return;
+    }
+    const wasRaw = process.stdin.isRaw;
+    let settled = false;
+    let buffer = "";
+
+    const finish = (size: { columns: number; rows: number } | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.stdin.off("data", onData);
+      if (!wasRaw) process.stdin.setRawMode?.(false);
+      resolve(size);
+    };
+
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      const match = buffer.match(/\x1b\[(\d+);(\d+)R/);
+      if (match) finish({ rows: Number(match[1]), columns: Number(match[2]) });
+    };
+
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    process.stdin.setRawMode?.(true);
+    process.stdin.on("data", onData);
+    // Save cursor, jump to a position far past any real terminal's bounds
+    // (the terminal clamps it to its actual last row/column), ask for a
+    // cursor position report, then restore — invisible to the user.
+    process.stdout.write("[s[999;999H[6n[u");
+  });
+}
+
 async function runMission(missionParts: string[] = [], options: { mode?: RunMode; apiUrl?: string; apiToken?: string; resume?: string } = {}) {
   const mission = missionParts.join(" ").trim();
+
+  const realSize = await probeRealTerminalSize();
+  if (realSize && realSize.columns > 0 && realSize.rows > 0) {
+    process.stdout.columns = realSize.columns;
+    process.stdout.rows = realSize.rows;
+  }
+
   process.stdout.write(enableAltScreen);
   const restore = () => process.stdout.write(disableAltScreen);
   process.on("exit", restore);
@@ -85,6 +153,9 @@ async function runMission(missionParts: string[] = [], options: { mode?: RunMode
         resumeId={options.resume}
       />
     );
+    // Safety net in case the probe above timed out or the terminal ignored
+    // it: still nudge Ink to recompute once the buffer has settled.
+    setTimeout(() => process.stdout.emit("resize"), 50);
     await instance.waitUntilExit();
   } finally {
     process.off("exit", restore);
