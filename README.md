@@ -36,6 +36,7 @@ keeps expanding the team when the mission changes.
 - [API Examples](#api-examples)
 - [Repository Layout](#repository-layout)
 - [Documentation Map](#documentation-map)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -402,6 +403,10 @@ docs/
 | Collaboration | [`docs/collaboration/`](docs/collaboration/) |
 | Owner Channel | [`docs/owner-channel/`](docs/owner-channel/) |
 | Environment | [`docs/env-reference/`](docs/env-reference/) |
+
+## Contributing
+
+Orvix is early. Issues and PRs are welcome once the hackathon judging period ends.
 
 ## License
 
