@@ -1,5 +1,3 @@
-# Orvix
-
 <div align="center">
 
 <img src="assets/orvix-logo.png" alt="ORVIX — Self-organizing AI engineering company" width="480">
